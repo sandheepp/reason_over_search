@@ -1,11 +1,14 @@
-SEARCH_R1_TEMPLATE = """Answer the given question.
-You must conduct reasoning inside <think> and </think>.
-After reasoning, if you need external knowledge, call search using <search> query </search>.
-Retrieved content will be returned between <information> and </information>.
-You may iterate think-search-information multiple times.
-When ready, provide the final answer inside <answer> and </answer>.
-Question: {prompt}
-Assistant:"""
+SEARCH_R1_TEMPLATE = (
+"Answer the given question. "
+"You must conduct reasoning inside <think> and </think> first every time you get new information. "
+"After reasoning, if you find you lack some knowledge, you can call a search engine by "
+"<search> query </search> and it will return the top searched results between "
+"<information> and </information>. "
+"You can search as many times as your want. "
+"If you find no further external knowledge needed, you can directly provide the answer inside "
+"<answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>. "
+"Question: {prompt}\n"
+)
 
 
 SEARCH_R1_TEMPLATE_SYS = """You are a helpful assistant that solves the question step by step with a search tool.

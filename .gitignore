@@ -9,3 +9,8 @@ local_retriever/models/
 # Evaluation
 evaluation_search_r1/search_r1_base_model/
 evaluation_search_r1/search_r1_instruct_model/
+evaluation_search_r1/results/
+
+# Secrets / local-only config
+.env
+.DS_Store

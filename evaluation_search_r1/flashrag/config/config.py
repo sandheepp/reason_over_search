@@ -285,6 +285,9 @@ class Config:
     def __getitem__(self, item):
         return self.final_config.get(item)
 
+    def get(self, item, default=None):
+        return self.final_config.get(item, default)
+
     def __contains__(self, key):
         if not isinstance(key, str):
             raise TypeError("index must be a str.")

@@ -11,7 +11,7 @@ from flashrag.prompt import PromptTemplate
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flashrag.pipeline.parallelism import INFERENCE_MAX_WORKERS
-from flashrag.search_r1.templates import SEARCH_R1_TEMPLATE, SEARCH_R1_TEMPLATE_SYS
+from flashrag.search_r1.templates import SEARCH_R1_TEMPLATE
 from flashrag.search_r1.answer_utils import remove_boxed, last_boxed_only_string, extract_answer
 from flashrag.search_r1.reward import compute_search_r1_reward
 from flashrag.search_r1.parser import extract_search_tag_query
@@ -31,10 +31,11 @@ class SearchR1Pipeline(BasicPipeline):
         self.search_r1_final_format_score = float(config.get("search_r1_final_format_score", 0.1))
         self.search_r1_retrieval_score = float(config.get("search_r1_retrieval_score", 0.1))
         print(f"enable_thinking: {enable_thinking}")
-        if apply_chat:
-            self.prompt_template = SEARCH_R1_TEMPLATE_SYS
-        else:
-            self.prompt_template = SEARCH_R1_TEMPLATE
+        # Match Search-R1 training: the filled SEARCH_R1_TEMPLATE is the user-role
+        # message content (no system prompt). apply_chat=True only toggles whether we
+        # render it through the instruct model's chat template.
+        # Ref: PeterGriffinJin/Search-R1 scripts/data_process/nq_search.py make_prefix.
+        self.prompt_template = SEARCH_R1_TEMPLATE
 
         self.tokenizer = AutoTokenizer.from_pretrained(config["generator_model_path"])
         self.tokenizer.add_special_tokens({'additional_special_tokens': ["<search>",
@@ -71,20 +72,21 @@ class SearchR1Pipeline(BasicPipeline):
         return ""
 
     def run_item(self, item):
+        user_content = self.prompt_template.format(prompt=item.question)
         if self.apply_chat:
-            query = self.tokenizer.apply_chat_template([
-                {'role': 'system', 'content': self.prompt_template},
-                {'role': 'user', 'content': item.question}
-            ], tokenize=False, add_generation_prompt=True, enable_thinking=self.enable_thinking)
+            query = self.tokenizer.apply_chat_template(
+                [{'role': 'user', 'content': user_content}],
+                tokenize=False, add_generation_prompt=True, enable_thinking=self.enable_thinking,
+            )
         else:
-            query = self.prompt_template.format(prompt=item.question)
+            query = user_content
         
         init_query = query
         item.update_output("query", query)
 
         remain_length = self.config['generator_max_input_len']
-        max_search_turns = 8
-        step_limit = 512
+        max_search_turns = 16
+        step_limit = 1024
         turns = 0
         over_length_flag = False
         stop_tokens = ['</search>', '</answer>', '<|im_end|>', '<|endoftext|>']
@@ -130,14 +132,21 @@ class SearchR1Pipeline(BasicPipeline):
 
                 if search_status.startswith("valid_search"):
                     search_result = self.retriever.search(search_content)
+                    # Match Search-R1's `_passages2string` in infer.py:
+                    # treat the first line of `contents` as the title and the rest as body,
+                    # render as "Doc {idx+1}(Title: {title}) {text}\n".
                     retrieval_text = ''
-                    for line in search_result:
-                        retrieval_text += f"{line['contents']}\n\n"
-                    retrieval_text = retrieval_text.strip()
+                    for idx, line in enumerate(search_result):
+                        content = line['contents']
+                        title = content.split("\n")[0]
+                        text = "\n".join(content.split("\n")[1:])
+                        retrieval_text += f"Doc {idx+1}(Title: {title}) {text}\n"
                 else:
                     retrieval_text = 'nothing to search'
 
-                query += f"{output_str}\n<information>\n{retrieval_text}\n</information>"
+                # Match Search-R1's `curr_search_template` framing in infer.py:
+                #   '\n\n{output_text}<information>{search_results}</information>\n\n'
+                query += f"\n\n{output_str}<information>{retrieval_text}</information>\n\n"
             elif stop_reason == 'stop' and (
                 stop_matched == 151643
                 or stop_matched == 151645

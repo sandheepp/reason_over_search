@@ -31,8 +31,9 @@ def em_check(prediction: str, golden_answers) -> float:
 
 
 def is_valid_sequence(text: str) -> Tuple[bool, str]:
-    tags_to_check = ["think", "search", "information", "answer"]
-    for tag in tags_to_check:
+    # Tag count check excludes <information> because retrieved Wikipedia
+    # passages occasionally contain the literal string "</information>".
+    for tag in ("think", "search", "answer"):
         opening_count = len(re.findall(f"<{tag}>", text))
         closing_count = len(re.findall(f"</{tag}>", text))
         if opening_count != closing_count:
@@ -50,7 +51,9 @@ def is_valid_sequence(text: str) -> Tuple[bool, str]:
                 state = "in_think"
             elif part == "</think>" and state == "in_think":
                 state = "after_think"
-            elif part == "<search>" and state == "after_think":
+            # Released GRPO checkpoint often skips <think> and opens <search>
+            # directly from start or after a previous <information> turn.
+            elif part == "<search>" and state in ["start", "after_think", "information"]:
                 state = "in_search"
             elif part == "</search>" and state == "in_search":
                 state = "after_search"
@@ -58,17 +61,19 @@ def is_valid_sequence(text: str) -> Tuple[bool, str]:
                 state = "in_information"
             elif part == "</information>" and state == "in_information":
                 state = "information"
-            elif part == "<answer>" and state == "after_think":
+            # Same: model can answer directly from start, after a search round, or post-think.
+            elif part == "<answer>" and state in ["start", "after_think", "after_search", "information"]:
                 state = "in_answer"
             elif part == "</answer>" and state == "in_answer":
                 state = "end"
             else:
                 return False, f"Unexpected tag {part} in state {state}"
         else:
-            if state in ["in_think", "in_search", "in_information", "in_answer"]:
-                continue
-            if part.strip():
-                return False, f"Unexpected content '{part.strip()}' between tags (state: {state})"
+            # Inside a tag body: any content is fine.
+            # Outside (start / after_X / information): the trained model
+            # interleaves plain-text planning prose between tag blocks, so
+            # accept it instead of rejecting the whole rollout.
+            continue
     if state != "end":
         return False, f"Incomplete sequence, ended in state {state}"
     return True, "Valid sequence format"

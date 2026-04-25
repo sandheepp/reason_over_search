@@ -102,7 +102,7 @@ openai_setting:
   base_url: ~
 
 generator_model_path: ~
-generator_max_input_len: 1024 # max length of the input
+generator_max_input_len: 8192 # total token budget for a Search-R1 multi-turn rollout (prompt + all <information> passages + completion). Must match or be under sglang's --context-length.
 generator_batch_size: 4 # batch size for generation, invalid for vllm
 generation_params:
   #do_sample: false
