@@ -197,7 +197,7 @@ info "step 7/9 — V2 worker venv (tarball fast-path → falls back to source co
 #      Per-arch tarballs known to exist (2026-05-16):
 #        Hopper (sm_70/80/89/90): pantomiman/reason-over-search-v1-venvs
 #                                 :dtensor_policy_worker_v2.tar.gz
-#        Blackwell-Ultra (sm_103): cobaltbluefire/reason-over-search-venvs
+#        Blackwell-Ultra (sm_103): sandheepp/reason-over-search-venvs
 #                                  :dtensor_policy_worker_v2_sm103.tar.gz
 #
 #      Lookup order (auto-resolved from HF_TOKEN's whoami):

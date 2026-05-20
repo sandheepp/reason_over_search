@@ -73,14 +73,14 @@ All other paper-faithful hyperparameters (lr=1e-6, kl_penalty=0.001, ratio_clip=
 | | What it does | Status |
 |---|---|---|
 | `start_b300.sh` | Pre-flight (venvs + assets + tokens) → retriever bring-up with `/batch_search` probe → smoke (4 steps) → if smoke passes, auto-launch prod in tmux `train` | Working; smoke passed first try after fixing 3 retriever bugs |
-| `bootstrap_b300.sh` | Apt prereqs + CUDA 12.9 + cuDNN + V2 venv tarball fast-path (with **Python interpreter symlink repair**) → retriever assets | Tarball uploaded to `cobaltbluefire/reason-over-search-venvs:dtensor_policy_worker_v2_sm90.tar.gz` |
+| `bootstrap_b300.sh` | Apt prereqs + CUDA 12.9 + cuDNN + V2 venv tarball fast-path (with **Python interpreter symlink repair**) → retriever assets | Tarball uploaded to `sandheepp/reason-over-search-venvs:dtensor_policy_worker_v2_sm90.tar.gz` |
 | `watch_resources.sh` | RAM / disk / GPU / retriever heartbeat every 30 s; `check_trace.py` digest every 10 steps | Live in tmux session `watch_resources` |
 | `sync_to_volume.sh` | Mirrors `/root/logs/` and `/root/reason_over_search/logs/` → `/mnt/milestone55/logs/` every 5 min (ckpts already direct-write to volume) | Live in tmux session `sync_to_volume` |
 | HF uploader (single public repo) | Uploads each `step_N/` + per-step rollouts + logs to one public repo, mirroring M5.1's structure — see [§5](#5-hf-repo-public-single-repo-mirror) | Re-launched 2026-05-17 08:17 UTC (an earlier per-step-private-repo experiment was deleted in favour of this layout) |
 
 ## 5. HF repo (public, pantomiman layout)
 
-**Canonical repo**: [`cobaltbluefire/qwen3.5-0.8b-grpo-musique-h200-m5_5-seed42-f1-floor-fmt`](https://huggingface.co/cobaltbluefire/qwen3.5-0.8b-grpo-musique-h200-m5_5-seed42-f1-floor-fmt) — public, layout matches [`pantomiman/qwen3.5-0.8b-grpo-musique-h200-a4-seed42-f1-only`](https://huggingface.co/pantomiman/qwen3.5-0.8b-grpo-musique-h200-a4-seed42-f1-only) (M5.1 sibling, different reward).
+**Canonical repo**: [`sandheepp/qwen3.5-0.8b-grpo-musique-h200-m5_5-seed42-f1-floor-fmt`](https://huggingface.co/sandheepp/qwen3.5-0.8b-grpo-musique-h200-m5_5-seed42-f1-floor-fmt) — public, layout matches [`pantomiman/qwen3.5-0.8b-grpo-musique-h200-a4-seed42-f1-only`](https://huggingface.co/pantomiman/qwen3.5-0.8b-grpo-musique-h200-a4-seed42-f1-only) (M5.1 sibling, different reward).
 
 ```
 .
@@ -100,8 +100,6 @@ All other paper-faithful hyperparameters (lr=1e-6, kl_penalty=0.001, ratio_clip=
 ```
 
 **Triple-backup invariant**: every checkpoint lands in (1) volume `/mnt/milestone55/...`, (2) HF Hub (single public repo), (3) local disk via symlink. Either of (1) or (2) alone is sufficient for full recovery.
-
-**Historical repo (preserved, not maintained)**: [`cobaltbluefire/qwen3.5-0.8b-grpo-musique-m5_5-h200-seed42`](https://huggingface.co/cobaltbluefire/qwen3.5-0.8b-grpo-musique-m5_5-h200-seed42) — the first M5.5 H200 repo, used a different layout (`logs/train_data/step_N.jsonl` instead of `rollouts/train_data_stepN.jsonl`). Pinned at step_140; new ckpts go to the canonical repo above. Kept for history.
 
 ## 6. Reward design (the ablation knob)
 
@@ -148,7 +146,7 @@ GRPO normalizes advantages within each group of 8 rollouts. The floor's purpose:
 | 20 | 191–200 | 0.336 | 99% | 3.81 | 99% | 5th consecutive cadence > 0.33 (longest sustained high band). Step 194: 0.388. |
 | 21 | 201–209 (partial) | 0.325 | 99% | 3.75 | 99% | **Run ended at step 209/311 (67%)** — box died (credits/volume gone). Final cadence mean. Step 205: 0.364. |
 
-**Headline trend (final, 209 steps before box death)**: cadence-mean **run-high 0.343 at C18**; cadence-mean held > 0.33 for 5 consecutive cadences (C16-C20). Single-step **all-time high 0.4217 at step 189 (C19)**, beating the prior step-105 / 0.4190. Two complete drift-and-recover cycles observed: C5→C8→C11 (first), C12→C16→C19 (second). Run reached **67% of epoch 1 (step 209/311)** before instance died. The persistent-volume + HF triple-backup pattern worked: volume deleted at credit-exhaustion, but all 209 rollouts + 20 ckpts + chain log preserved on HF (`cobaltbluefire/qwen3.5-0.8b-grpo-musique-h200-m5_5-seed42-f1-floor-fmt`).
+**Headline trend (final, 209 steps before box death)**: cadence-mean **run-high 0.343 at C18**; cadence-mean held > 0.33 for 5 consecutive cadences (C16-C20). Single-step **all-time high 0.4217 at step 189 (C19)**, beating the prior step-105 / 0.4190. Two complete drift-and-recover cycles observed: C5→C8→C11 (first), C12→C16→C19 (second). Run reached **67% of epoch 1 (step 209/311)** before instance died. The persistent-volume + HF triple-backup pattern worked: volume deleted at credit-exhaustion, but all 209 rollouts + 20 ckpts + chain log preserved on HF (`sandheepp/qwen3.5-0.8b-grpo-musique-h200-m5_5-seed42-f1-floor-fmt`).
 
 **No tool-collapse**: cadence 2 dipped to 1.15 tool calls (the worry was a permanent collapse to single-shot answers parking at the 0.1 floor) but the model self-corrected by cadence 4 — iterative search was rediscovered without intervention.
 

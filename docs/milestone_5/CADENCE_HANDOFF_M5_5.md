@@ -19,7 +19,7 @@ Companion to [`docs/report/RESULTS_M5_5_H200.md`](../report/RESULTS_M5_5_H200.md
 
 ## Quick context
 
-The training run is GRPO on Qwen3.5-0.8B / MuSiQue / **`max(0.1, F1)` if `<answer>` else `0` reward** (the M5.5 ablation knob: F1 + 0.1 partial-credit floor + format-gate), running on Spheron H200 with persistent virtiofs volume `milestone55`. Every 10 GRPO steps a checkpoint lands at `/mnt/milestone55/ckpts/m5_5_prod_h200/seed42/step_N/`. The `hf_poller` tmux session pushes new ckpts + rollouts + logs to [`cobaltbluefire/qwen3.5-0.8b-grpo-musique-m5_5-h200-seed42`](https://huggingface.co/cobaltbluefire/qwen3.5-0.8b-grpo-musique-m5_5-h200-seed42) (public, single repo with subdirs). The cadence cycle = pull the new step's data, write an analysis block, append to RESULTS, commit, push GitHub.
+The training run is GRPO on Qwen3.5-0.8B / MuSiQue / **`max(0.1, F1)` if `<answer>` else `0` reward** (the M5.5 ablation knob: F1 + 0.1 partial-credit floor + format-gate), running on Spheron H200 with persistent virtiofs volume `milestone55`. Every 10 GRPO steps a checkpoint lands at `/mnt/milestone55/ckpts/m5_5_prod_h200/seed42/step_N/`. The `hf_poller` tmux session pushes new ckpts + rollouts + logs to [`sandheepp/qwen3.5-0.8b-grpo-musique-h200-m5_5-seed42-f1-floor-fmt`](https://huggingface.co/sandheepp/qwen3.5-0.8b-grpo-musique-h200-m5_5-seed42-f1-floor-fmt) (public, single repo with subdirs). The cadence cycle = pull the new step's data, write an analysis block, append to RESULTS, commit, push GitHub.
 
 Main doc being updated: [`docs/report/RESULTS_M5_5_H200.md`](../report/RESULTS_M5_5_H200.md). Currently fires every ~40-60 min depending on step wall time.
 
@@ -231,11 +231,11 @@ Wait 60s and retry. The poller commits via the HfApi (not git), so explicit `git
 
 ```bash
 cd /tmp && rm -rf hf-readme-sync
-GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/cobaltbluefire/qwen3.5-0.8b-grpo-musique-m5_5-h200-seed42 hf-readme-sync
+GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/sandheepp/qwen3.5-0.8b-grpo-musique-h200-m5_5-seed42-f1-floor-fmt hf-readme-sync
 # edit README.md, then:
 cd /tmp/hf-readme-sync && git add README.md && git commit -m "..."
 HF_TOK=$(grep ^HF_TOKEN= ~/path/to/.env | cut -d= -f2)
-git push "https://cobaltbluefire:${HF_TOK}@huggingface.co/cobaltbluefire/qwen3.5-0.8b-grpo-musique-m5_5-h200-seed42" HEAD:main
+git push "https://sandheepp:${HF_TOK}@huggingface.co/sandheepp/qwen3.5-0.8b-grpo-musique-h200-m5_5-seed42-f1-floor-fmt" HEAD:main
 ```
 
 ## Reference: cadence trajectory through cadence 9

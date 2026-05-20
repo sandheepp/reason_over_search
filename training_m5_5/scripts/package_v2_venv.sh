@@ -44,7 +44,7 @@ done
 
 # Default REPO_ID: <hf_user>/reason-over-search-venvs
 # Parse `hf auth whoami` output carefully — it prints an ANSI-colored "✓ Logged in"
-# banner on stdout line 1 and the username on line 2 ("  user: cobaltbluefire").
+# banner on stdout line 1 and the username on line 2 ("  user: sandheepp").
 # Strip ANSI escapes, grep for "user:", take the value.
 if [[ -z "${REPO_ID}" ]]; then
     VENV_HF="${REPO_ROOT}/training_m5_5/nemo_rl/.venv/bin/hf"

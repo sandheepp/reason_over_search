@@ -443,7 +443,7 @@ The bootstrap auto-discovers per-arch tarballs in your HF account (via `hf auth 
 | GPU family | SM | Repo | File |
 |---|---|---|---|
 | Hopper (H100/H200) | sm_90 | `pantomiman/reason-over-search-v1-venvs` | `dtensor_policy_worker_v2.tar.gz` |
-| **Blackwell-Ultra (B300)** | **sm_103** | **`cobaltbluefire/reason-over-search-venvs` (public)** | **`dtensor_policy_worker_v2_sm103.tar.gz`** |
+| **Blackwell-Ultra (B300)** | **sm_103** | **`sandheepp/reason-over-search-venvs` (public)** | **`dtensor_policy_worker_v2_sm103.tar.gz`** |
 
 Each tarball is built on its native SM and **only runs on that SM** (no cross-arch fallback). After your first successful bootstrap on a new SM, run `bash training_m5_5/scripts/package_v2_venv.sh` to publish your own tarball to `<your_hf_user>/reason-over-search-venvs:dtensor_policy_worker_v2_sm${CC}.tar.gz`; future bootstraps on the same SM auto-discover it. See [B300_RUNBOOK.md §5](B300_RUNBOOK.md#5-nv-grouped-gemm-cant-torchcudainit-inside-a-gpu-less-ray-actor) for the lookup chain.
 

@@ -104,7 +104,7 @@ UV_PROJECT_ENVIRONMENT="$V2_VENV" \
 | GPU family | SM | Repo | File | Notes |
 |---|---|---|---|---|
 | Hopper (H100/H200) | sm_70/80/89/90 | `pantomiman/reason-over-search-v1-venvs` | `dtensor_policy_worker_v2.tar.gz` | Hopper-built; SASS for sm_70/80/89/90, PTX for sm_90 → will NOT run on Blackwell |
-| **Blackwell-Ultra (B300)** | **sm_103** | **`cobaltbluefire/reason-over-search-venvs` (public)** | **`dtensor_policy_worker_v2_sm103.tar.gz`** | **Built 2026-05-16 on Verda B300 (commit `907af71`); torch 2.10+cu129, TE 2.14+71bbefbf** |
+| **Blackwell-Ultra (B300)** | **sm_103** | **`sandheepp/reason-over-search-venvs` (public)** | **`dtensor_policy_worker_v2_sm103.tar.gz`** | **Built 2026-05-16 on Verda B300 (commit `907af71`); torch 2.10+cu129, TE 2.14+71bbefbf** |
 
 The bootstrap auto-discovers your private tarballs by querying `hf auth whoami` against `HF_TOKEN` — no env-var plumbing needed. Lookup order:
 1. `<your_hf_user>/reason-over-search-venvs:dtensor_policy_worker_v2_sm${CC}.tar.gz`
@@ -334,7 +334,7 @@ After this, `bash training_m5_5/scripts/start_b300.sh` is your single trigger fo
 | `NVTE_CUDA_ARCHS="90;120"` (vs default 7-arch) | **~3.5×** | The single biggest knob. Must include at least one non-stripped arch (i.e. NOT just "120"). |
 | `MAX_JOBS=32` / `CMAKE_BUILD_PARALLEL_LEVEL=32` | ~2× until single-file tail | 60 vCPUs → up to 32 parallel nvcc procs. Tail-limited. |
 | `TORCH_CUDA_ARCH_LIST="12.0+PTX"` | ~1.5× | Affects `deep-ep`, `causal-conv1d`, `mamba-ssm` (not TE). |
-| Pre-built per-arch tarball (default fast-path) | ~10× | Bootstrap tries `<your_hf>/reason-over-search-venvs:…_sm${CC}.tar.gz` first, then pantomiman's Hopper tarball, then source compile. For B300 specifically: `cobaltbluefire/reason-over-search-venvs:dtensor_policy_worker_v2_sm103.tar.gz`. See §5 above. |
+| Pre-built per-arch tarball (default fast-path) | ~10× | Bootstrap tries `<your_hf>/reason-over-search-venvs:…_sm${CC}.tar.gz` first, then pantomiman's Hopper tarball, then source compile. For B300 specifically: `sandheepp/reason-over-search-venvs:dtensor_policy_worker_v2_sm103.tar.gz`. See §5 above. |
 
 The remaining slow tail is dominated by a handful of large TE kernels (`cast_transpose_fusion`, `ln_fwd_cuda_kernel`, etc) that take 1-3 min each per arch and can't parallelize across files because `--threads 1`.
 

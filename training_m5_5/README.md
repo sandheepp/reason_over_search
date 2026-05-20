@@ -112,7 +112,7 @@ The bootstrap auto-discovers per-arch tarballs in your HF account (via the `HF_T
 | GPU family | SM | Repo | File | torch / TE | Source |
 |---|---|---|---|---|---|
 | Hopper (H100, H200) | sm_70/80/89/90 | `pantomiman/reason-over-search-v1-venvs` | `dtensor_policy_worker_v2.tar.gz` | torch 2.10+cu129, TE 2.14+71bbefbf | Vast.ai bootstrap (NeMo-RL upstream tarball) |
-| Blackwell-Ultra (B300) | **sm_103** | `cobaltbluefire/reason-over-search-venvs` (public) | `dtensor_policy_worker_v2_sm103.tar.gz` | torch 2.10+cu129, TE 2.14+71bbefbf | Built 2026-05-16 on Verda B300 (commit `907af71`) — see [package_v2_venv.sh](scripts/package_v2_venv.sh) |
+| Blackwell-Ultra (B300) | **sm_103** | `sandheepp/reason-over-search-venvs` (public) | `dtensor_policy_worker_v2_sm103.tar.gz` | torch 2.10+cu129, TE 2.14+71bbefbf | Built 2026-05-16 on Verda B300 (commit `907af71`) — see [package_v2_venv.sh](scripts/package_v2_venv.sh) |
 
 To bake your own tarball after a successful bootstrap on a new SM:
 
