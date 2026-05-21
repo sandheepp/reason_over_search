@@ -1,8 +1,8 @@
 # Retriever
 
-> **How the search actually works + RAM costs + swapping in a quantized index:** see [docs/RETRIEVER_INDEXING.md](../docs/RETRIEVER_INDEXING.md).
+> **How the search actually works + RAM costs + swapping in a quantized index:** see [docs/RETRIEVER_INDEXING.md](../docs/retriever/RETRIEVER_INDEXING.md).
 >
-> TL;DR — defaults are **CPU + flat FAISS** (`~65 GB`, exact float32, runs in the existing `/venv/retriever` faiss-cpu venv). For GPU FAISS, run [`setup_gpu_venv.sh`](setup_gpu_venv.sh) and pass `--gpu --index ./indexes/wiki18_100w_e5_ivf4096_sq8.index` to `retriever_serving.py`. The IVF-SQ8 index is ~16 GB and built by [/workspace/index_creation](../../index_creation/).
+> TL;DR — default is **CPU + IVF-SQ8** (~16 GB, ~3-10× faster than flat, <1 % recall hit; runs in the existing `/venv/retriever` faiss-cpu venv). Download with one curl from this project's HF dataset (see [Index](#index) below). For GPU FAISS, run [`setup_gpu_venv.sh`](setup_gpu_venv.sh) and pass `--gpu` to `retriever_serving.py`. The flat IP index (~65 GB, exact float32) is opt-in via `--index ./indexes/wiki18_100w_e5_flat_inner.index` for paper-quality eval.
 
 ## Environment Setup — CPU (default)
 
@@ -37,7 +37,7 @@ Final size of the venv: ~6.3 GB (mostly nvidia-cudnn / torch / triton wheels).
 
 GPU FAISS holds the IVF-SQ8 index in VRAM (~16 GB) plus the E5 encoder (~1 GB). That fits on an idle 4090 (24 GB) but **does not co-exist with SGLang's 22 GB 3B-model footprint** on the same card. On this single-GPU box, run GPU FAISS only when SGLang is stopped (or use `--num_retriever 1`; each worker would clone its own 16 GB into VRAM).
 
-For sweeps where SGLang must be live, stay on CPU and either keep the flat index or pass `--index ./indexes/wiki18_100w_e5_ivf4096_sq8.index` for ~3-10× faster CPU retrieval.
+For sweeps where SGLang must be live, stay on CPU with the IVF-SQ8 default. The flat IP index is the slower fallback; pass `--index ./indexes/wiki18_100w_e5_flat_inner.index` only when exact recall matters.
 
 ## Download steps
 
@@ -61,10 +61,19 @@ mv corpus/wiki-18.jsonl corpus/wiki18_100w.jsonl
 
 ### Index
 
+The retriever's default is the IVF-SQ8 quantized index (~16 GB, ~3-10× faster than flat, <1 % recall hit). Download from this project's HF dataset:
+
 ```bash
 cd local_retriever
 mkdir -p indexes
+curl -L -o indexes/wiki18_100w_e5_ivf4096_sq8.index \
+  https://huggingface.co/datasets/pantomiman/reason-over-search/resolve/main/retriever/wiki18_100w_e5_ivf4096_sq8.index
+# ~16 GB, ~2-4 min on a fast link
+```
 
+The flat IP index (`wiki18_100w_e5_flat_inner.index`, ~65 GB after merge + gunzip) is optional — only needed for full retrieval-quality eval (exact recall). To download:
+
+```bash
 huggingface-cli download PeterJinGo/wiki-18-e5-index \
   --repo-type dataset \
   --local-dir indexes \
@@ -75,7 +84,7 @@ cat indexes/part_aa indexes/part_ab > indexes/wiki18_100w_e5_flat_inner.index.gz
 gunzip -f indexes/wiki18_100w_e5_flat_inner.index.gz
 ```
 
-For the IVF4096,SQ8 quantized index (~16 GB, ~3-10× faster, <1 % recall hit), see [/workspace/index_creation/README.md](../../index_creation/README.md).
+To rebuild the IVF-SQ8 index locally from the flat index instead of downloading, see [/workspace/index_creation/README.md](../../index_creation/README.md).
 
 ### Embedding Model
 
@@ -89,23 +98,23 @@ huggingface-cli download intfloat/e5-base-v2 \
 
 ## Run Retriever
 
-### CPU (default)
+### CPU + IVF-SQ8 (default)
 
 ```bash
 cd /workspace/reason_over_search/local_retriever
 python retriever_serving.py --config retriever_config.yaml --num_retriever 4 --port 3005
 ```
 
-Defaults read from [retriever_config.yaml](retriever_config.yaml): `faiss_gpu: False`, `index_path: ./indexes/wiki18_100w_e5_flat_inner.index`. CPU FAISS is read-only and parallel-safe — bump `--num_retriever` for higher QPS on big datasets.
+Defaults read from [retriever_config.yaml](retriever_config.yaml): `faiss_gpu: False`, `index_path: ./indexes/wiki18_100w_e5_ivf4096_sq8.index`, `faiss_nprobe: 64`. CPU FAISS is read-only and parallel-safe — bump `--num_retriever` for higher QPS on big datasets.
 
-### CPU + IVF-SQ8 (faster, same VRAM cost = 0)
+### CPU + flat IP (exact, slower fallback)
 
 ```bash
 python retriever_serving.py --config retriever_config.yaml --num_retriever 4 --port 3005 \
-  --index ./indexes/wiki18_100w_e5_ivf4096_sq8.index
+  --index ./indexes/wiki18_100w_e5_flat_inner.index
 ```
 
-`--index` overrides the yaml's `index_path`. The `nprobe=64` from the yaml is applied automatically since the index is IVF-based.
+`--index` overrides the yaml's `index_path`. Use this only when paper-quality exact recall matters.
 
 ### GPU + IVF-SQ8 (fastest, requires the GPU venv)
 

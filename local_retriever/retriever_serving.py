@@ -82,17 +82,22 @@ async def search(request: QueryRequest):
     async with retriever_semaphore:
         retriever_idx = available_retrievers.popleft()
         try:
+            # Wrap sync FAISS search in to_thread so it doesn't block the
+            # asyncio event loop. FAISS releases the GIL inside its C++ search
+            # path, so concurrent threads actually run in parallel and we get
+            # the full benefit of `num_retriever` instances.
+            payload = await asyncio.to_thread(
+                retriever_list[retriever_idx].search, query, top_n, return_score
+            )
             if return_score:
-                results, scores = retriever_list[retriever_idx].search(
-                    query, top_n, return_score)
+                results, scores = payload
                 docs = [
                     Document(id=r['id'], contents=r['contents'])
                     for r in results
                 ]
                 return docs, scores
             else:
-                results = retriever_list[retriever_idx].search(
-                    query, top_n, return_score)
+                results = payload
                 return [
                     Document(id=r['id'], contents=r['contents'])
                     for r in results
@@ -116,9 +121,11 @@ async def batch_search(request: BatchQueryRequest):
     async with retriever_semaphore:
         retriever_idx = available_retrievers.popleft()
         try:
+            payload = await asyncio.to_thread(
+                retriever_list[retriever_idx].batch_search, query, top_n, return_score
+            )
             if return_score:
-                results, scores = retriever_list[retriever_idx].batch_search(
-                    query, top_n, return_score)
+                results, scores = payload
                 batched = [
                     [
                         Document(id=r['id'], contents=r['contents'])
@@ -128,8 +135,7 @@ async def batch_search(request: BatchQueryRequest):
                 ]
                 return batched, scores
             else:
-                results = retriever_list[retriever_idx].batch_search(
-                    query, top_n, return_score)
+                results = payload
                 return [
                     [
                         Document(id=r['id'], contents=r['contents'])

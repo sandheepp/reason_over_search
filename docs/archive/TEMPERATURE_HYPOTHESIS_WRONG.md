@@ -1,3 +1,11 @@
+---
+title: TEMPERATURE HYPOTHESIS WRONG
+tags: []
+source: internal
+created: 2026-04-28
+updated: 2026-05-01
+---
+
 # Post-mortem: "paper eval uses temperature=1.0" was wrong
 
 **Date**: 2026-04-28
@@ -5,7 +13,7 @@
 
 ## What I claimed
 
-In [COMPARISON_PLAN_B.md](../COMPARISON_PLAN_B.md) (since corrected) and [CLAUDE.md](../../claude/CLAUDE.md) (since corrected), the suspect ranking briefly listed:
+In [../archive/COMPARISON_PLAN_B_v0.md](../milestone_1/../archive/COMPARISON_PLAN_B_v0.md) (since corrected) and [CLAUDE.md](../../claude/CLAUDE.md) (since corrected), the suspect ranking briefly listed:
 
 > **Sampling temperature: 0.0 vs paper/upstream.** […] Paper Appendix B.2 specifies *"temperature of 1.0 and a top-p value of 1.0"*; upstream `verl/trainer/config/ppo_trainer.yaml` `actor_rollout_ref.rollout` uses `temperature=1.0, top_p=0.95, top_k=-1, do_sample=True`, with **no separate `val_kwargs`** so the paper's eval ran at these same values.
 
@@ -20,7 +28,7 @@ The verl framework hard-codes `do_sample=False` for the validation pass *separat
 
 So the rollout YAML block (`temperature=1.0, top_p=0.95`) describes **training rollouts only**. Validation reuses the same vLLM engine but with the override flags. There is no separate `val_kwargs`; the override is hard-coded inside `vllm_rollout`.
 
-Authoritative reading: [PAPER_VS_OURS_AUDIT.md D3](../PAPER_VS_OURS_AUDIT.md) (D3 is the corrected reading of this question, written 2026-04-28).
+Authoritative reading: [PAPER_VS_OURS_AUDIT.md D3](../eval/PAPER_VS_OURS_AUDIT.md) (D3 is the corrected reading of this question, written 2026-04-28).
 
 ## What went wrong in my reasoning
 
@@ -37,7 +45,7 @@ Given the Search-R1 paper does not specify an explicit eval temperature anywhere
 2. Trace what kwargs it passes to the rollout worker.
 3. Trace how those kwargs interact with the rollout YAML defaults — do they override or layer?
 
-That's what the user's [PAPER_VS_OURS_AUDIT.md](../PAPER_VS_OURS_AUDIT.md) does, exhaustively, for every sampling knob. It's the pattern to imitate.
+That's what the user's [PAPER_VS_OURS_AUDIT.md](../eval/PAPER_VS_OURS_AUDIT.md) does, exhaustively, for every sampling knob. It's the pattern to imitate.
 
 ## Correct picture (per the audit)
 
@@ -49,7 +57,7 @@ That's what the user's [PAPER_VS_OURS_AUDIT.md](../PAPER_VS_OURS_AUDIT.md) does,
 | `do_sample` | not stated | **False** | implicit False | **MATCH** |
 | `n` | not stated | 1 (forced when `do_sample=False`) | 1 | **MATCH** |
 
-The actually load-bearing divergence on the base variant is `apply_chat=False` ([D1](../PAPER_VS_OURS_AUDIT.md#d1-in-detail-the-load-bearing-one)), not sampling.
+The actually load-bearing divergence on the base variant is `apply_chat=False` ([D1](../eval/PAPER_VS_OURS_AUDIT.md#d1-in-detail-the-load-bearing-one)), not sampling.
 
 ## Lessons for future audits
 

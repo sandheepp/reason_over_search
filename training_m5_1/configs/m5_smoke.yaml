@@ -1,0 +1,464 @@
+# M5.1 smoke config — Qwen3.5-0.8B GRPO on MuSiQue, ReSearch recipe scaffold.
+#
+# Purpose: verify the loop runs end-to-end on 1× A100-80GB, capture per-step
+#          wall-clock, generation-length distribution, reward-mean trajectory.
+#          NOT a representative-shape estimate (batch is 25× smaller than
+#          production); use m5_1_research_paper.yaml for wall-clock projection.
+#
+# Tag conventions:
+#   [paper]  : ReSearch / Search-R1 hyperparameter (no divergence for smoke).
+#   [smoke]  : reduced from production shape so the loop completes in minutes.
+#   [memory] : hardware-tuning knob (free to retune after observing GPU profile).
+#
+# Run from repo root:
+#   bash training_m5_1/scripts/smoke.sh        # convenience wrapper
+#   python training_m5_1/scripts/run_grpo.py --config=training_m5_1/configs/m5_smoke.yaml
+#
+# Companion doc: docs/milestone_5/MILESTONE_5.md §"Run sequence — M5".
+
+# =============================================================================
+# GRPO algorithm
+# =============================================================================
+grpo:
+  # [paper] verl `n_agent=5` (GRPO group size G). Keep for smoke so the
+  # leave-one-out baseline produces sensible advantages.
+  num_generations_per_prompt: 5
+  # [smoke] 4 prompts × 5 generations = 20 trajectories per step (milestone
+  # doc M5 smoke shape). Production shape will be 96 prompts × 5 = 480.
+  num_prompts_per_step: 4
+  # [smoke] 4 steps: enough to exercise ckpt save (save_period=2 -> saves at
+  # step 2 + step 4) and exit cleanly. Was 10 (s/step measurement); we don't
+  # need the longer signal for sbatch-body verification.
+  max_num_steps: 4
+  max_num_epochs: 1
+  # [smoke] Validation off for end-to-end smoke — exercising val codepath
+  # would slow the smoke without producing useful signal at 50 steps.
+  val_period: 0
+  val_at_start: false
+  val_at_end: false
+  max_val_samples: 256
+  val_batch_size: 256
+  # Paper has NO explicit max_turns cap; bounded only by the 8192-token
+  # total-response budget. NeMo-RL env REQUIRES an explicit cap, so we set
+  # generously (10) so the per-turn token budget (`max_new_tokens` * turns)
+  # plus prompt budget naturally caps things before max_turns bites. With
+  # max_new_tokens=500 and max_total_sequence_length=4096, the effective
+  # turn ceiling is ~7 turns; 10 is safe headroom.
+  max_rollout_turns: 10
+  normalize_rewards: true
+  # Paper uses group-mean baseline (verl GRPO default), not LOO. Flipped to
+  # false 2026-05-10 per the M5.1 paper-faithfulness audit (Group C). LOO has
+  # slightly lower variance but is non-paper.
+  use_leave_one_out_baseline: false
+  overlong_filtering: false
+  use_dynamic_sampling: false
+  dynamic_sampling_max_gen_batches: 10
+  batch_multiplier: 1
+  reward_shaping:
+    enabled: false
+    overlong_buffer_length: 128
+    overlong_buffer_penalty: 1
+    max_response_length: ${policy.max_total_sequence_length}
+    stop_properly_penalty_coef: null
+  adv_estimator:
+    name: "grpo"
+    normalize_rewards: ${grpo.normalize_rewards}
+    use_leave_one_out_baseline: ${grpo.use_leave_one_out_baseline}
+    minus_baseline: true
+  reward_scaling:
+    enabled: false
+    source_min: 0.0
+    source_max: 1.0
+    target_min: 0.0
+    target_max: 1.0
+  seq_logprob_error_threshold: null
+  seed: 42
+  async_grpo:
+    enabled: false
+    max_trajectory_age_steps: 1
+    in_flight_weight_updates: false
+    recompute_kv_cache_after_weight_updates: false
+
+# =============================================================================
+# Loss
+# =============================================================================
+loss_fn:
+  # [paper] verl kl_loss_coef=0.001.
+  reference_policy_kl_penalty: 0.001
+  # [paper] verl kl_loss_type=low_var_kl ≡ NeMo-RL k3.
+  reference_policy_kl_type: "k3"
+  kl_input_clamp_value: 20.0
+  kl_output_clamp_value: 10.0
+  # [paper] PPO clip ε=0.2.
+  ratio_clip_min: 0.2
+  ratio_clip_max: 0.2
+  ratio_clip_c: null
+  use_on_policy_kl_approximation: false
+  use_importance_sampling_correction: false
+  truncated_importance_sampling_ratio: null
+  truncated_importance_sampling_ratio_min: null
+  truncated_importance_sampling_type: tis
+  sequence_level_importance_ratios: false
+  token_level_loss: true
+  force_on_policy_ratio: false
+  use_kl_in_reward: false
+
+# =============================================================================
+# Checkpointing — ENABLED for smoke so the save round-trip is actually
+# verified before any prod sbatch ships. Mirrors prod yaml's save shape
+# (consolidated=true, optimizer=false) so the smoke exercises the SAME save
+# code path. With max_num_steps=4 + save_period=2, the smoke produces 2 saves
+# (steps 2, 4); the watcher (if running) uploads them to HF Hub. Verify
+# step_2/ and step_4/ exist + sizes ~3.2 GB after smoke completes.
+# =============================================================================
+checkpointing:
+  enabled: true
+  checkpoint_dir: "results/grpo/m5_smoke"
+  # See m5_1_research_paper.yaml for the postmortem (research_v2:5fa8558):
+  # `train/loss/mean` and `keep_top_k: 0` both crashed prod. The contract is
+  # load-bearing — if either changes, re-verify via this smoke before prod.
+  metric_name: null
+  higher_is_better: false
+  keep_top_k: null
+  save_period: 2
+  checkpoint_must_save_by: null
+  model_save_format: "safetensors"
+  save_consolidated: true   # match prod save shape; smoke must exercise consolidate
+  save_optimizer: false     # match prod (3.2 GB/save consolidated fp32 safetensors)
+
+# =============================================================================
+# Policy (model + training + generation)
+# =============================================================================
+policy:
+  # M5 target model. Override via CLI for ablations (e.g. -Base for the
+  # base variant). Same model family as M4's locked eval target so the
+  # trained checkpoint is directly evaluable through evaluation_qwen35.
+  model_name: "Qwen/Qwen3.5-0.8B"
+  tokenizer:
+    name: ${policy.model_name}
+    chat_template_kwargs: null
+  hf_config_overrides: {}
+
+  # 20 traj/step = num_prompts_per_step × num_generations_per_prompt.
+  # One optimizer step per training step (pure on-policy GRPO).
+  train_global_batch_size: 20
+  # [memory] 0.8B is small but Qwen3.5's vocab is 248,320 — log_softmax during
+  # logprob inference allocates batch*seq*vocab*2bytes ≈ huge. Step 1 worked at
+  # micro=4 but step 2 OOM'd by 0.15 GB margin (PyTorch frag + vLLM sleep
+  # footprint). micro=2 halves the logprob memory peak; combined with the
+  # vLLM gpu_memory_utilization drop and expandable_segments env var, gives
+  # ~8 GB additional headroom.
+  train_micro_batch_size: 2
+  generation_batch_size: 32
+  logprob_batch_size: ${policy.train_micro_batch_size}
+  # [paper] verl max_prompt_length=4096. Matches M4 eval's generator_max_input_len.
+  max_total_sequence_length: 4096
+  precision: "bfloat16"
+  logprob_chunk_size: null
+  offload_optimizer_for_logprob: false
+
+  # ---- DTensor backend ----
+  # _v2: true REQUIRES the pre-built v2 worker venv at
+  # training/nemo_rl/venvs/nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2/
+  # (~12 GB; download via `hf download pantomiman/reason-over-search-v1-venvs
+  # dtensor_policy_worker_v2.tar.gz --repo-type dataset` then extract).
+  # WITHOUT that venv, NeMo-RL's lazy _env_builder Ray actor calls
+  # `uv run --locked --extra automodel ...` which triggers nv-grouped-gemm's
+  # setup.py -> torch.cuda.init() -> "No CUDA GPUs are available" (the actor
+  # is allocated GPU-less). v1 (`_v2: false`) was tried as workaround but
+  # crashed on Qwen3.5: `'Qwen3_5Model' object has no attribute 'layers'`
+  # (parallelize.py:661); v2 + nemo_automodel handles the Qwen3.5 layer
+  # discovery correctly.
+  dtensor_cfg:
+    _v2: true
+    enabled: true
+    cpu_offload: false
+    sequence_parallel: false
+    activation_checkpointing: true
+    tensor_parallel_size: 1
+    context_parallel_size: 1
+    custom_parallel_plan: null
+    automodel_kwargs: {}
+    lora_cfg:
+      enabled: false
+      target_modules: []
+      exclude_modules: []
+      match_all_linear: true
+      dim: 8
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "post"
+      lora_A_init: "xavier"
+      use_triton: true
+
+  # ---- Megatron backend off ----
+  megatron_cfg:
+    enabled: false
+    force_reconvert_from_hf: false
+    empty_unused_memory_level: 1
+    activation_checkpointing: false
+    converter_type: "Qwen2ForCausalLM"
+    tensor_model_parallel_size: 1
+    expert_tensor_parallel_size: 1
+    expert_model_parallel_size: 1
+    pipeline_model_parallel_size: 1
+    num_layers_in_first_pipeline_stage: null
+    num_layers_in_last_pipeline_stage: null
+    context_parallel_size: 1
+    pipeline_dtype: ${policy.precision}
+    sequence_parallel: false
+    freeze_moe_router: true
+    moe_router_dtype: "fp64"
+    moe_router_load_balancing_type: "none"
+    moe_router_bias_update_rate: 0.0
+    moe_permute_fusion: false
+    apply_rope_fusion: true
+    bias_activation_fusion: true
+    defer_fp32_logits: false
+    moe_per_layer_logging: false
+    moe_enable_deepep: false
+    moe_token_dispatcher_type: "alltoall"
+    moe_shared_expert_overlap: false
+    gradient_accumulation_fusion: false
+    peft:
+      enabled: false
+      target_modules: []
+      exclude_modules: []
+      dim: 8
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "post"
+      lora_A_init_method: "xavier"
+      lora_B_init_method: "zero"
+      a2a_experimental: false
+      lora_dtype: None
+    optimizer:
+      optimizer: "adam"
+      lr: 1.0e-6
+      min_lr: 1.0e-7
+      weight_decay: 0.01
+      bf16: true
+      fp16: false
+      params_dtype: "float32"
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1e-8
+      sgd_momentum: 0.9
+      use_distributed_optimizer: true
+      use_precision_aware_optimizer: true
+      clip_grad: ${policy.max_grad_norm}
+      optimizer_cpu_offload: false
+      optimizer_offload_fraction: 0.0
+    scheduler:
+      start_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
+      end_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
+      weight_decay_incr_style: "constant"
+      lr_decay_style: "constant"
+      lr_decay_iters: 1000
+      lr_warmup_iters: 14   # 0.285 × 50 (smoke); production retunes to ~286 × steps_ratio
+      lr_warmup_init: 1.0e-7
+    distributed_data_parallel_config:
+      grad_reduce_in_fp32: false
+      overlap_grad_reduce: true
+      overlap_param_gather: true
+      use_custom_fsdp: false
+      data_parallel_sharding_strategy: "optim_grads_params"
+    fp8_cfg:
+      enabled: false
+      fp8: "e4m3"
+      fp8_recipe: "blockwise"
+      fp8_param: false
+    env_vars: null
+
+  draft:
+    enabled: false
+    model_name: null
+    loss_weight: 0.1
+    num_layers: null
+    aux_layer_indices: null
+
+  # [Qwen3.5 required] sequence_packing OFF — see training/fix/CHANGES.md §5
+  # (GatedDeltaNet kernel crashes with packing). dynamic_batching replaces it.
+  dynamic_batching:
+    enabled: true
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    logprob_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.logprob_batch_size}}
+    sequence_length_round: 64
+
+  sequence_packing:
+    enabled: false
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    logprob_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.logprob_batch_size}}
+    algorithm: "modified_first_fit_decreasing"
+    sequence_length_round: 64
+
+  make_sequence_length_divisible_by: ${policy.dtensor_cfg.tensor_parallel_size}
+  max_grad_norm: 1.0
+
+  # ---- Optimizer (DTensor path; AdamW) ----
+  optimizer:
+    name: "torch.optim.AdamW"
+    kwargs:
+      # [paper] verl lr=1e-6.
+      lr: 1.0e-6
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+      eps: 1e-8
+      foreach: false
+      fused: false
+
+  # ---- LR schedule: constant from step 1 (paper-faithful) ----
+  # Paper uses verl default `lr_warmup_steps_ratio=0.0` -> no warmup, constant
+  # LR. M2 anchor had 0.285 ratio of warmup; dropped 2026-05-10 per Group C
+  # audit. LinearLR retained with total_iters=1 (effectively no-op) so the
+  # NeMo-RL scheduler stack still validates.
+  scheduler:
+    - name: "torch.optim.lr_scheduler.LinearLR"
+      kwargs:
+        start_factor: 1.0
+        end_factor: 1.0
+        total_iters: 1
+    - name: "torch.optim.lr_scheduler.ConstantLR"
+      kwargs:
+        factor: 1.0
+        total_iters: 10000000000
+    - milestones: [1]
+
+  # ---- Generation (vLLM, colocated on the single A100) ----
+  generation:
+    backend: "vllm"
+    # Paper budget is 8192 tokens TOTAL across all rollout turns (not per turn);
+    # ours is per-turn. 1024 per turn × ~5 typical turns = ~5000 (closer to
+    # paper's 8192 implicit ceiling). Bumped from 500 (M2 anchor) per Group C
+    # audit; production yaml will pair this with max_total_sequence_length=8192.
+    max_new_tokens: 1024
+    # [paper] verl rollout temperature=1.
+    temperature: 1.0
+    # [paper] verl rollout top_p=1.
+    top_p: 1.0
+    top_k: null
+    stop_token_ids: null
+    # First-turn fallback — env's next_stop_strings only kicks in after step 1.
+    # Union of both arms' tags; neither arm emits the other's closing tag.
+    stop_strings: ["</tool_call>", "</search>", "</answer>"]
+    mcore_generation_config:
+      buffer_size_gb: 10
+      num_cuda_graphs: 4
+      block_size_tokens: 256
+      use_cuda_graphs_for_non_decode_steps: true
+      enable_chunked_prefill: true
+      unified_memory_level: 0
+      max_tokens: 16384
+    vllm_cfg:
+      async_engine: false
+      precision: ${policy.precision}
+      kv_cache_dtype: "auto"
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      expert_parallel_size: 1
+      # [memory] vLLM "sleeps" between rollout/train cycles but holds ~10%
+      # of utilization as resident even when asleep. At 0.7 that was 6.74 GB
+      # resident which left only 14.8 GB free when policy worker hit the
+      # log_softmax peak (15.15 GB needed → OOM by 0.35 GB). 0.5 cuts vLLM
+      # asleep footprint to ~4.8 GB AND its active KV cache to ~40 GB which
+      # is still 600x concurrency at 4096-tok prompts (overkill for 20 traj).
+      gpu_memory_utilization: 0.5
+      max_model_len: ${policy.max_total_sequence_length}
+      enforce_eager: false
+      use_deep_gemm: false
+      num_last_layers_in_bf16: 0
+      num_first_layers_in_bf16: 0
+      enable_vllm_metrics_logger: true
+      vllm_metrics_logger_interval: 0.5
+    vllm_kwargs: {}
+    colocated:
+      enabled: true
+      resources:
+        gpus_per_node: null
+        num_nodes: null
+
+# =============================================================================
+# Data — MuSiQue (M5.1 single-dataset training)
+# =============================================================================
+data:
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  shuffle: true
+  num_workers: 1
+  use_multiple_dataloader: false
+
+  train:
+    dataset_name: search_r1
+    # Produced by training_m5_1/scripts/prep_musique.py (idempotent download).
+    # Full ~19,938 rows; smoke only consumes max_num_steps × num_prompts_per_step
+    # = 200 unique rows via shuffled streaming.
+    data_path: data/training/musique/train.parquet
+    arm: qwen_native
+    seed: ${grpo.seed}
+
+  validation: null
+
+  default:
+    # Pre-staged by training_m5_1/scripts/sync_m4_prompts.py --mode qwen35_minimal
+    # (M4.2 canonical). Re-run with --mode <winner> after M4.4 locks; the file
+    # path stays the same so this config doesn't need editing.
+    prompt_file: training_m5_1/src/prompts/m5_qwen35_user.txt
+    # qwen35_minimal mode has NO system message (the protocol prose lives in
+    # the user template). For modes that do (recall_port, p3_decide_xml, etc.),
+    # sync_m4_prompts.py writes m5_qwen35_system.txt — set the path below.
+    system_prompt_file: null
+    processor: search_r1_processor
+    env_name: search_r1
+
+# =============================================================================
+# Env — Search-R1 retrieval Ray actor
+# =============================================================================
+env:
+  search_r1:
+    arm: qwen_native
+    retriever_url: "http://127.0.0.1:3005"
+    # [paper] M4 retrieval_topk=5 (milestone doc §"Prompt + tag scheme").
+    top_n: 5
+    # Aligned with paper (no explicit cap); bounded by max_total_sequence_length.
+    max_turns: 10
+    # Paper has NO per-observation cap; raw retrieval text appended as-is.
+    # We keep a per-chunk cap as a safety net but raise from M4's 480 chars
+    # (~120 tokens; M4 v3 lock) to 1024 chars (~256 tokens), much closer to
+    # the paper's effective behaviour. Routed through `max_chars_per_chunk`
+    # for qwen_native (env code dispatches by arm — see search_r1_env.py:223-).
+    max_obs_chars: 1024
+    request_timeout_s: 30.0
+
+# =============================================================================
+# Logging
+# =============================================================================
+logger:
+  log_dir: "logs"
+  num_val_samples_to_print: 5
+  wandb_enabled: true
+  tensorboard_enabled: false
+  mlflow_enabled: false
+  swanlab_enabled: false
+  monitor_gpus: true
+  wandb:
+    # Per-experiment project per docs/milestone_5/MILESTONE_5.md §"Folder
+    # layout" — keeps M5.1 / M5.2 / ... cleanly separated in W&B.
+    project: "reason_over_search_m5_1"
+    name: "qwen3.5-0.8b-musique-m5_smoke-seed42"
+  swanlab:
+    project: "reason_over_search_m5_1"
+    name: "qwen3.5-0.8b-musique-m5_smoke-seed42"
+  tensorboard: {}
+  mlflow:
+    experiment_name: "reason_over_search_m5_1"
+    run_name: "qwen3.5-0.8b-musique-m5_smoke-seed42"
+    tracking_uri: "http://localhost:5000"
+  gpu_monitoring:
+    collection_interval: 10
+    flush_interval: 10
+
+# =============================================================================
+# Cluster
+# =============================================================================
+cluster:
+  gpus_per_node: 1
+  num_nodes: 1

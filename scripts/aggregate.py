@@ -44,7 +44,7 @@ def parse_trace_health(path: Path) -> dict[str, float] | None:
 
     close-rate: fraction of examples whose `final_response` contains `</answer>`.
     length-truncated: fraction with stop_reason indicating length cap (anything other
-    than 'stop'/'eos'). Both are in [0,1]; close-rate is what COMPARISON_PLAN_B.md
+    than 'stop'/'eos'). Both are in [0,1]; close-rate is what docs/archive/COMPARISON_PLAN_B_v0.md
     asked to surface per (dataset, variant).
     """
     try:

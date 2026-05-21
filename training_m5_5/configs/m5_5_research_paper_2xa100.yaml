@@ -1,0 +1,478 @@
+# M5.5 production config — Qwen3.5-0.8B GRPO on MuSiQue, 2x A100 80GB,
+# with the **F1 + 0.1 partial-credit floor + format gate** reward (the ablation
+# knob — see training_m5_5/src/rewards/search_r1.py and
+# docs/milestone_5/MILESTONE_5_5.md §2).
+#
+# Authored 2026-05-11 by porting m5_5_research_paper.yaml (1x A100) to multi-GPU.
+# Every [paper]-tagged value matches the 1x variant; only multi-GPU / vLLM
+# knobs differ:
+#   - cluster.gpus_per_node : 2 (was 1)
+#   - policy.generation.vllm_cfg.tensor_parallel_size : 2 (was 1; splits rollout weights)
+#   - policy.generation.vllm_cfg.gpu_memory_utilization : 0.7 (was 0.5; TP=2 frees per-GPU budget)
+#
+# DTensor backend: TP=2 (was TP=1 DDP; flipped 2026-05-12 per HARDWARE_COMPARISON §3).
+# train_micro_batch_size stays at 1 (Qwen3.5 GDN kernel + seq=8192 log_softmax peak).
+# Pattern mirrors training/configs/_archive_m2/grpo_qwen3.5_2b_2xa100.yaml.
+#
+# Paper-faithfulness audit + Group-C decisions: docs/milestone_5/PAPER_VS_OURS_M5.md §3-§8.
+#
+# Divergences from the paper, kept for hardware reasons:
+#   - num_prompts_per_step: 64 (paper 256; 1× A100-80GB can't fit larger).
+#     Trajectory count per epoch is unchanged — total work is identical,
+#     just chunked smaller (more optimizer steps, same advantage signal).
+#   - train_micro_batch_size: 1 (paper doesn't specify; v7 OOM forced 2→1
+#     at production seq=8192). Root cause: NeMo-RL's non-TP path
+#     (distributed/model_utils.py:1378) casts the full [B,S,V] logits to
+#     fp32 BEFORE any chunking can apply, allocating 16.3 GB at our shape.
+#     No config-level fix — a NeMo-RL source patch would unlock micro=2
+#     and roughly halve training-phase wall-clock.
+#   - reward: F1 + 0.1 floor + format gate (paper-faithful 3-tier shaping).
+#     Differs from M5.1 (F1-only). The 0.1 floor is the ablation target;
+#     see MILESTONE_5_5.md §2 for the formula and PHASE_1_SALVAGE.md
+#     Finding 1 for the motivation.
+#   - max_obs_chars: 1024 (paper has no cap; we keep safety net to bound
+#     pathological retrieval blowups).
+#
+# v7-measured per-step wall-clock (micro=1, seq=8192, 320 traj/step):
+#   step 1 (warmup): 55.6 min
+#   step 2 (steady):  59.1 min
+#   per-phase (step 2): policy_training 75%, logprobs 21%, generation 4%
+#   full-run estimate: 622 steps × ~58 min = 25 days on 1× A100-80GB
+#
+# Not available in this NeMo-RL v0.6.0 build (no source patching this session):
+#   - O5 torch.compile (only SGLang has the knob, not DTensor)
+#   - R1 enable_prefix_caching (already default-true on A100 cc≥8 — see
+#     vllm_worker.py:549-550, so already in effect)
+#
+# Run from repo root:
+#   bash training_m5_5/scripts/run.sh --mode prod_2xa100
+#
+# Companion docs:
+#   - docs/milestone_5/PAPER_VS_OURS_M5.md  — paper-vs-ours mapping
+#   - docs/report/CODE_SETUP_m5.md          — setup + smoke results
+#   - docs/report/RESULTS_SMOKE_m5.md       — v6/v7 measurement log
+
+# =============================================================================
+# GRPO algorithm
+# =============================================================================
+grpo:
+  # [paper] verl `n_agent=5` (GRPO group size G). Keeps leave-one-out
+  # group-mean baseline well-conditioned.
+  num_generations_per_prompt: 5
+  # [divergence:hardware] Paper bs=256; 1× A100 can't fit 256×5 trajectories
+  # at seq=8192 in one optimizer step. 64 prompts × G=5 = 320 trajectories
+  # per step, ≈ same per-epoch trajectory budget as paper (epoch-count
+  # preserved), just chunked smaller. Iterate down to 32 if OOM at runtime.
+  num_prompts_per_step: 64
+  # 2 epochs of MuSiQue at 64 prompts/step:
+  #   floor(19,938 / 64) × 2 = 311 × 2 = 622
+  # Paper trains ~156 steps at bs=256 (paper §3.1, TOTAL_EPOCHS=2). Same
+  # number of trajectories seen overall; just more optimizer steps because
+  # each sees fewer prompts.
+  max_num_steps: 622
+  max_num_epochs: 2
+  # Validation disabled — MuSiQue val/dev parquet not yet generated
+  # (prep_musique.py only emits train split). Run-final checkpoint will
+  # be evaluated separately via evaluation_qwen35 against MuSiQue dev.
+  val_period: 0
+  val_at_start: false
+  val_at_end: false
+  max_val_samples: 256
+  val_batch_size: 256
+  # Paper has no explicit max_turns cap; bounded by 8192-token response
+  # budget. NeMo-RL env REQUIRES a cap; 10 is generously above the natural
+  # turn ceiling (max_new_tokens=1024 × ~5 typical turns + 8192 budget ⇒
+  # 5-7 turns before saturation).
+  max_rollout_turns: 10
+  normalize_rewards: true
+  # [paper, Group C 2026-05-10] verl GRPO default uses group-mean baseline,
+  # not leave-one-out. Flipped to false to match.
+  use_leave_one_out_baseline: false
+  overlong_filtering: false
+  use_dynamic_sampling: false
+  dynamic_sampling_max_gen_batches: 10
+  batch_multiplier: 1
+  reward_shaping:
+    enabled: false
+    overlong_buffer_length: 128
+    overlong_buffer_penalty: 1
+    max_response_length: ${policy.max_total_sequence_length}
+    stop_properly_penalty_coef: null
+  adv_estimator:
+    name: "grpo"
+    normalize_rewards: ${grpo.normalize_rewards}
+    use_leave_one_out_baseline: ${grpo.use_leave_one_out_baseline}
+    minus_baseline: true
+  reward_scaling:
+    enabled: false
+    source_min: 0.0
+    source_max: 1.0
+    target_min: 0.0
+    target_max: 1.0
+  seq_logprob_error_threshold: null
+  seed: 42
+  async_grpo:
+    enabled: false
+    max_trajectory_age_steps: 1
+    in_flight_weight_updates: false
+    recompute_kv_cache_after_weight_updates: false
+
+# =============================================================================
+# Loss
+# =============================================================================
+loss_fn:
+  # [paper] verl kl_loss_coef=0.001.
+  reference_policy_kl_penalty: 0.001
+  # [paper] verl kl_loss_type=low_var_kl ≡ NeMo-RL k3.
+  reference_policy_kl_type: "k3"
+  kl_input_clamp_value: 20.0
+  kl_output_clamp_value: 10.0
+  # [paper] PPO clip ε=0.2.
+  ratio_clip_min: 0.2
+  ratio_clip_max: 0.2
+  ratio_clip_c: null
+  use_on_policy_kl_approximation: false
+  use_importance_sampling_correction: false
+  truncated_importance_sampling_ratio: null
+  truncated_importance_sampling_ratio_min: null
+  truncated_importance_sampling_type: tis
+  sequence_level_importance_ratios: false
+  token_level_loss: true
+  force_on_policy_ratio: false
+  use_kl_in_reward: false
+
+# =============================================================================
+# Checkpointing
+# =============================================================================
+checkpointing:
+  enabled: true
+  checkpoint_dir: "results/grpo/m5_5_prod"
+  # [Fix 2026-05-11, mirror m5_5_research_paper.yaml ckpt block; see commit
+  # 5fa8558 for the full postmortem.]
+  metric_name: null
+  higher_is_better: false
+  keep_top_k: null
+  save_period: 50
+  checkpoint_must_save_by: null
+  model_save_format: "safetensors"
+  save_consolidated: true
+  save_optimizer: false
+
+# =============================================================================
+# Policy (model + training + generation)
+# =============================================================================
+policy:
+  model_name: "Qwen/Qwen3.5-0.8B"
+  tokenizer:
+    name: ${policy.model_name}
+    chat_template_kwargs: null
+  hf_config_overrides: {}
+
+  # 64 prompts × 5 = 320 trajectories per step.
+  train_global_batch_size: 320
+  # [memory] micro=2 at seq=8192 OOM'd in v7 step 2 (production-shape
+  # smoke 2026-05-10): log_softmax during training's post-processing tried
+  # to allocate 13.73 GB with 13.11 GB free. DTensor worker peaked at
+  # 60 GB; vLLM correctly asleep at 4.6 GB. Going to micro=1 halves
+  # log_softmax (~7 GB) and the training activations peak. Effectively
+  # the same memory pressure as smoke v6 (micro=2 × seq=4096). Compute
+  # is unchanged — just more micro-batches per step.
+  train_micro_batch_size: 1
+  generation_batch_size: 32
+  logprob_batch_size: ${policy.train_micro_batch_size}
+  # [paper] verl max_prompt_length=8192. Matches Search-R1 production budget.
+  max_total_sequence_length: 8192
+  precision: "bfloat16"
+  logprob_chunk_size: null
+  offload_optimizer_for_logprob: false
+
+  # ---- DTensor backend (v2 required for Qwen3.5 hybrid arch) ----
+  dtensor_cfg:
+    _v2: true
+    enabled: true
+    cpu_offload: false
+    sequence_parallel: false
+    activation_checkpointing: true
+    # [2x A100 speedup, ported from HARDWARE_COMPARISON §3] TP=2 partitions the
+    # model across both GPUs (training side); was 1 (DDP) before. Load-bearing
+    # for the projected ~2-2.5x training-phase speedup. micro=2 is the secondary
+    # gain TP=2 unlocks; KEPT at 1 here pending a dedicated 2-GPU smoke.
+    tensor_parallel_size: 2  # Option A: TP=2 with custom_parallel_plan (Qwen3.5 vocab-parallel FSDP bug workaround)
+    context_parallel_size: 1
+    custom_parallel_plan: training_m5_5.src.parallel_plan_qwen35.custom_parallel_plan  # Option A: Qwen3.5 vocab-parallel FSDP bug workaround
+    automodel_kwargs: {force_hf: true}  # NeMo-RL issue 2072: bypass automodel state_dict adapter, fixes TP=2 vocab-parallel lm_head refit
+    lora_cfg:
+      enabled: false
+      target_modules: []
+      exclude_modules: []
+      match_all_linear: true
+      dim: 8
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "post"
+      lora_A_init: "xavier"
+      use_triton: true
+
+  # ---- Megatron backend off ----
+  megatron_cfg:
+    enabled: false
+    force_reconvert_from_hf: false
+    empty_unused_memory_level: 1
+    activation_checkpointing: false
+    converter_type: "Qwen2ForCausalLM"
+    tensor_model_parallel_size: 1
+    expert_tensor_parallel_size: 1
+    expert_model_parallel_size: 1
+    pipeline_model_parallel_size: 1
+    num_layers_in_first_pipeline_stage: null
+    num_layers_in_last_pipeline_stage: null
+    context_parallel_size: 1
+    pipeline_dtype: ${policy.precision}
+    sequence_parallel: false
+    freeze_moe_router: true
+    moe_router_dtype: "fp64"
+    moe_router_load_balancing_type: "none"
+    moe_router_bias_update_rate: 0.0
+    moe_permute_fusion: false
+    apply_rope_fusion: true
+    bias_activation_fusion: true
+    defer_fp32_logits: false
+    moe_per_layer_logging: false
+    moe_enable_deepep: false
+    moe_token_dispatcher_type: "alltoall"
+    moe_shared_expert_overlap: false
+    gradient_accumulation_fusion: false
+    peft:
+      enabled: false
+      target_modules: []
+      exclude_modules: []
+      dim: 8
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "post"
+      lora_A_init_method: "xavier"
+      lora_B_init_method: "zero"
+      a2a_experimental: false
+      lora_dtype: None
+    optimizer:
+      optimizer: "adam"
+      lr: 1.0e-6
+      min_lr: 1.0e-7
+      weight_decay: 0.01
+      bf16: true
+      fp16: false
+      params_dtype: "float32"
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1e-8
+      sgd_momentum: 0.9
+      use_distributed_optimizer: true
+      use_precision_aware_optimizer: true
+      clip_grad: ${policy.max_grad_norm}
+      optimizer_cpu_offload: false
+      optimizer_offload_fraction: 0.0
+    scheduler:
+      start_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
+      end_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
+      weight_decay_incr_style: "constant"
+      lr_decay_style: "constant"
+      lr_decay_iters: 1000
+      lr_warmup_iters: 0
+      lr_warmup_init: 1.0e-7
+    distributed_data_parallel_config:
+      grad_reduce_in_fp32: false
+      overlap_grad_reduce: true
+      overlap_param_gather: true
+      use_custom_fsdp: false
+      data_parallel_sharding_strategy: "optim_grads_params"
+    fp8_cfg:
+      enabled: false
+      fp8: "e4m3"
+      fp8_recipe: "blockwise"
+      fp8_param: false
+    env_vars: null
+
+  draft:
+    enabled: false
+    model_name: null
+    loss_weight: 0.1
+    num_layers: null
+    aux_layer_indices: null
+
+  # [Qwen3.5 required] sequence_packing OFF — GatedDeltaNet kernel crashes
+  # with packed sequences (training/fix/CHANGES.md §5). dynamic_batching
+  # replaces it.
+  dynamic_batching:
+    enabled: true
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    logprob_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.logprob_batch_size}}
+    sequence_length_round: 64
+
+  sequence_packing:
+    enabled: false
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    logprob_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.logprob_batch_size}}
+    algorithm: "modified_first_fit_decreasing"
+    sequence_length_round: 64
+
+  make_sequence_length_divisible_by: ${policy.dtensor_cfg.tensor_parallel_size}
+  max_grad_norm: 1.0
+
+  # ---- Optimizer (DTensor path; AdamW) ----
+  optimizer:
+    name: "torch.optim.AdamW"
+    kwargs:
+      # [paper] verl lr=1e-6.
+      lr: 1.0e-6
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+      eps: 1e-8
+      foreach: false
+      # [M5.2 O1] Fused AdamW kernel — single CUDA kernel for the optimizer
+      # step. ~1.03-1.08× on full step (RUNTIME_EFFICIENCY.md §O1). Doesn't
+      # affect training math. Shipped PyTorch feature, no risk.
+      fused: true
+
+  # ---- LR schedule: constant (paper-faithful, Group C 2026-05-10) ----
+  # Paper uses verl default lr_warmup_steps_ratio=0.0 → no warmup, constant
+  # LR. LinearLR with total_iters=1 + start=end=1.0 is effectively a no-op
+  # so the NeMo-RL scheduler stack still validates.
+  scheduler:
+    - name: "torch.optim.lr_scheduler.LinearLR"
+      kwargs:
+        start_factor: 1.0
+        end_factor: 1.0
+        total_iters: 1
+    - name: "torch.optim.lr_scheduler.ConstantLR"
+      kwargs:
+        factor: 1.0
+        total_iters: 10000000000
+    - milestones: [1]
+
+  # ---- Generation (vLLM, colocated on the single A100) ----
+  generation:
+    backend: "vllm"
+    # Paper budget is 8192 tokens TOTAL across rollout turns; ours is
+    # per-turn. 1024 per turn × ~5 typical turns ≈ paper's 8192 implicit
+    # ceiling. Matches smoke value (Group C).
+    max_new_tokens: 1024
+    # [paper] verl rollout temperature=1.
+    temperature: 1.0
+    # [paper] verl rollout top_p=1.
+    top_p: 1.0
+    top_k: null
+    stop_token_ids: null
+    stop_strings: ["</tool_call>", "</search>", "</answer>"]
+    mcore_generation_config:
+      buffer_size_gb: 10
+      num_cuda_graphs: 4
+      block_size_tokens: 256
+      use_cuda_graphs_for_non_decode_steps: true
+      enable_chunked_prefill: true
+      unified_memory_level: 0
+      max_tokens: 16384
+    vllm_cfg:
+      # [M5.2 R2] vLLM async engine — continuous batching across in-flight
+      # requests instead of static `generation_batch_size` waves. Helps
+      # multi-turn rollouts where turns finish at different points and bunch
+      # up (RUNTIME_EFFICIENCY.md §R2). 1.3-1.5x on rollout phase. Rollout
+      # is only 4% of step at production shape per v7 baseline, so the
+      # full-step delta is ~1-2%. Still worth it: shipped vLLM feature,
+      # paper-orthogonal.
+      async_engine: true
+      precision: ${policy.precision}
+      kv_cache_dtype: "auto"
+      # [memory] TP=2 splits rollout weights across the two GPUs, halving
+      # per-GPU vLLM weight footprint. Training stays DDP at TP=1 (above).
+      tensor_parallel_size: 2
+      pipeline_parallel_size: 1
+      expert_parallel_size: 1
+      # [memory] 0.7 (vs 0.5 on 1x A100) — TP=2 frees per-GPU KV-cache
+      # budget since each card now holds half the vLLM weights. Conservative
+      # first-run value; raise after observing VRAM headroom.
+      gpu_memory_utilization: 0.7
+      max_model_len: ${policy.max_total_sequence_length}
+      enforce_eager: false
+      use_deep_gemm: false
+      num_last_layers_in_bf16: 0
+      num_first_layers_in_bf16: 0
+      enable_vllm_metrics_logger: true
+      vllm_metrics_logger_interval: 0.5
+    vllm_kwargs: {}
+    colocated:
+      enabled: true
+      resources:
+        gpus_per_node: null
+        num_nodes: null
+
+# =============================================================================
+# Data — MuSiQue (M5 single-dataset training)
+# =============================================================================
+data:
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  shuffle: true
+  num_workers: 1
+  use_multiple_dataloader: false
+
+  train:
+    dataset_name: search_r1
+    data_path: data/training/musique/train.parquet
+    arm: qwen_native
+    seed: ${grpo.seed}
+
+  validation: null
+
+  default:
+    prompt_file: training_m5_5/src/prompts/m5_qwen35_user.txt
+    system_prompt_file: null
+    processor: search_r1_processor
+    env_name: search_r1
+
+# =============================================================================
+# Env — Search-R1 retrieval Ray actor
+# =============================================================================
+env:
+  search_r1:
+    arm: qwen_native
+    retriever_url: "http://127.0.0.1:3005"
+    # [paper] M4 retrieval_topk=5.
+    top_n: 5
+    max_turns: 10
+    # [divergence:safety] Paper has no per-obs cap. Our 1024-char/chunk
+    # safety net bounds pathological retrieval blowups; chosen large enough
+    # (~256 tokens) to not bite typical retrieval text.
+    max_obs_chars: 1024
+    request_timeout_s: 30.0
+
+# =============================================================================
+# Logging
+# =============================================================================
+logger:
+  log_dir: "logs"
+  num_val_samples_to_print: 5
+  wandb_enabled: true
+  tensorboard_enabled: false
+  mlflow_enabled: false
+  swanlab_enabled: false
+  monitor_gpus: true
+  wandb:
+    project: "reason_over_search_m5_5"
+    name: "qwen3.5-0.8b-musique-m5_5_prod-seed42"
+  swanlab:
+    project: "reason_over_search_m5_5"
+    name: "qwen3.5-0.8b-musique-m5_5_prod-seed42"
+  tensorboard: {}
+  mlflow:
+    experiment_name: "reason_over_search_m5_5"
+    run_name: "qwen3.5-0.8b-musique-m5_5_prod-seed42"
+    tracking_uri: "http://localhost:5000"
+  gpu_monitoring:
+    collection_interval: 10
+    flush_interval: 10
+
+# =============================================================================
+# Cluster
+# =============================================================================
+cluster:
+  gpus_per_node: 2
+  num_nodes: 1

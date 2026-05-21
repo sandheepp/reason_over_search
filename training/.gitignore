@@ -1,0 +1,23 @@
+# NeMo-RL source IS committed (training/nemo_rl/ tracked) — so local edits land
+# in this repo's git history. Pinned via setup.sh's NEMO_RL_REF (re-clone with
+# FORCE_RECLONE=1 to bump). Only the deps + caches stay out:
+nemo_rl/.venv/
+nemo_rl/wandb/
+nemo_rl/results/
+nemo_rl/.pytest_cache/
+nemo_rl/.ruff_cache/
+nemo_rl/**/__pycache__/
+nemo_rl/**/*.egg-info/
+nemo_rl/build/
+nemo_rl/dist/
+
+# Local env file (W&B key, etc.)
+.env
+
+# uv-managed venvs at the training/ level (in case any are created here)
+.venv/
+
+# Python build artifacts
+__pycache__/
+*.egg-info/
+*.pyc

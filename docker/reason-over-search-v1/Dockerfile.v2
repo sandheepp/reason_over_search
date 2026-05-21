@@ -1,0 +1,45 @@
+# reason-over-search v2.
+#
+# Thin layer on top of v1 that adds Qwen3.5 (model_type=qwen3_5) AutoConfig
+# support: bumps `transformers` in the eval venv from 4.57.1 (the floor pulled
+# in by the eval requirements + SGLang 0.5.9's hard pin) to 5.7.0 (the floor
+# that adds the qwen3_5 architecture).
+#
+# Why a thin Dockerfile.v2 and not a full rebuild of the v1 Dockerfile:
+#   1. The v1 Dockerfile's `uv sync vllm,automodel` step now fails on a
+#      from-scratch rebuild because NeMo-RL upstream declared those two
+#      extras mutually exclusive after 2026-05-02. Fixing that is a
+#      separate concern from shipping the transformers patch.
+#   2. The v1 image already has every conda env we want; we only need to
+#      add one pip install. A FROM-v1 layer is ~500 MB instead of ~46 GB.
+#
+# Build (run from repo root):
+#   docker build --platform linux/amd64 \
+#     -f docker/reason-over-search-v1/Dockerfile.v2 \
+#     -t pantomiman/reason-over-search-v1:v2 .
+#
+# Push:
+#   docker push pantomiman/reason-over-search-v1:v2
+#
+# When NeMo-RL pins automodel/vllm compatibility back, fold this layer's
+# pip install into evaluation_search_r1/requirements.txt (or as a final RUN
+# in the main Dockerfile before env-hash) and retire this file.
+
+ARG TARGETPLATFORM=linux/amd64
+FROM --platform=${TARGETPLATFORM} pantomiman/reason-over-search-v1:v1
+
+# SGLang's install-time pin says transformers==4.57.1; pip's resolver will
+# warn at install time but the upgrade installs cleanly. SGLang remains
+# functional under transformers 5.7.0 at runtime (verified on Vast 2026-05-09;
+# the M4 first-Vast-smoke fix; documented in docs/report/CODE_SETUP_m4.md
+# §4-bis.1). transformers 5.7.0 also pulls fresh huggingface-hub (1.14.x)
+# and hf-xet (1.5.x) as transitive deps; that's expected.
+RUN /opt/miniforge3/bin/conda run -n evaluation_search_r1 \
+      python -m pip install --no-cache-dir transformers==5.7.0 && \
+    /opt/miniforge3/bin/conda clean -afy
+
+LABEL org.opencontainers.image.version="2" \
+      org.opencontainers.image.description="reason-over-search v2: v1 + transformers 5.7.0 (adds Qwen3.5 model_type=qwen3_5 AutoConfig support)."
+
+# Re-run env-hash so Vast's image-content fingerprint reflects the upgrade.
+RUN env-hash > /.env_hash 2>/dev/null || true

@@ -1,0 +1,7 @@
+# Smoke-test config for ALICE 2126456 — absolute paths, IVF-SQ8, CPU FAISS.
+gpu_id: "0"
+retrieval_method: "/workspace/reason_over_search/models/e5-base-v2"
+index_path: "/workspace/reason_over_search/indexes/wiki18_100w_e5_ivf4096_sq8.index"
+faiss_gpu: False
+faiss_nprobe: 64
+corpus_path: "/workspace/reason_over_search/corpus/wiki18_100w.jsonl"

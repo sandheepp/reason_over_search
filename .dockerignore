@@ -15,3 +15,15 @@ local_retriever/indexes
 local_retriever/models
 # In case a huge file lives at repo root by mistake
 **/wiki18_100w.jsonl
+
+# Hybrid image:
+#   - retriever + evaluation_search_r1 source IS COPY'd (baked in).
+#   - training/ is NOT copied — repo cloned on Vast at runtime; image only
+#     ships uv + a pre-warmed wheel cache for NeMo-RL. So exclude the heavy
+#     training/nemo_rl/ source from the build context to keep builds fast.
+training/nemo_rl
+training/.venv
+docs
+data
+data_subsample
+.git

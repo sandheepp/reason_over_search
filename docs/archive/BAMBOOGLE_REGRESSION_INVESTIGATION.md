@@ -1,3 +1,11 @@
+---
+title: BAMBOOGLE REGRESSION INVESTIGATION
+tags: []
+source: internal
+created: 2026-04-28
+updated: 2026-04-28
+---
+
 # Post-mortem: Bamboogle "regression" was n=125 variance
 
 **Date**: 2026-04-28

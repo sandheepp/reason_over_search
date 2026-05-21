@@ -2,11 +2,12 @@
 gpu_id: "0"
 
 # -------------------------------------------------Retrieval Settings------------------------------------------------#
-# Defaults are CPU + flat index — the safe, hardware-portable setup that runs in /venv/retriever (faiss-cpu).
-# To swap to GPU + the IVF-SQ8 index, pass `--gpu --index ./indexes/wiki18_100w_e5_ivf4096_sq8.index` to retriever_serving.py
-# (and use the GPU venv at .venv — see README.md).
+# Defaults (v1, May 2026): CPU + IVF-SQ8 index — fast enough for training rollouts (≈1.7 s for a 3-query batch
+# under 8 workers; the flat IP index timed out under load). Recall hit < 1 % vs flat (per local_retriever/README.md).
+# To swap back to the exact flat IP index, pass `--index ./indexes/wiki18_100w_e5_flat_inner.index` to
+# retriever_serving.py. For full retrieval-quality eval (not training rollouts) use the flat index with `--num_retriever 2`.
 retrieval_method: "./models/e5-base-v2/"  # name or path of the retrieval model.
-index_path: "./indexes/wiki18_100w_e5_flat_inner.index"  # ~65 GB exact float32; CLI --index can override
+index_path: "./indexes/wiki18_100w_e5_ivf4096_sq8.index"  # ~16 GB IVF4096-SQ8; download from HF dataset pantomiman/reason-over-search; CLI --index can override
 faiss_gpu: False  # CPU FAISS by default; CLI --gpu can override
 faiss_nprobe: 64  # only applied when the index is IVF-based (FlatIP ignores it)
 corpus_path: "./corpus/wiki18_100w.jsonl"  # path to corpus in '.jsonl' format that store the documents

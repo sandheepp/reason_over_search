@@ -1,3 +1,11 @@
+---
+title: DISCARDED ABLATIONS
+tags: []
+source: internal
+created: 2026-04-28
+updated: 2026-05-01
+---
+
 # Discarded ablations — autoresearch loop
 
 History of pipeline ablations tried on `experiment_ros/<tag>` branches that did **not** survive the keep/discard threshold (improvement < ~2 pp EM and within single-seed noise on n=125 Bamboogle/instruct).
@@ -36,5 +44,5 @@ Baseline used as reference: **instruct / Bamboogle / seed 1 / temp=0**. EM 0.336
 ## Caveats
 
 - Single seed × n=125 Bamboogle has ~3 pp standard error. Anything below that band is noise. Some "discards" might survive with 3 seeds; not worth re-running unless we have a stronger prior.
-- All of the above tested on **instruct/Bamboogle**. The base-variant gap (the bigger problem per [COMPARISON_PLAN_B.md](../COMPARISON_PLAN_B.md)) was not exercised by these ablations.
-- The audit in [PAPER_VS_OURS_AUDIT.md](../PAPER_VS_OURS_AUDIT.md) identified the load-bearing miss (base `apply_chat=False`) **after** the ablation loop above; that fix lives outside this discarded-list.
+- All of the above tested on **instruct/Bamboogle**. The base-variant gap (the bigger problem per [../archive/COMPARISON_PLAN_B_v0.md](../milestone_1/../archive/COMPARISON_PLAN_B_v0.md)) was not exercised by these ablations.
+- The audit in [PAPER_VS_OURS_AUDIT.md](../eval/PAPER_VS_OURS_AUDIT.md) identified the load-bearing miss (base `apply_chat=False`) **after** the ablation loop above; that fix lives outside this discarded-list.

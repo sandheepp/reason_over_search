@@ -103,9 +103,9 @@ def is_retrieval_correct(text: str, golden_answers: List[str]) -> bool:
 def compute_search_r1_reward(
     solution_str: str,
     golden_answers,
-    structure_format_score: float = 0.2,
-    final_format_score: float = 0.1,
-    retrieval_score: float = 0.1,
+    structure_format_score: float = 0.0,
+    final_format_score: float = 0.0,
+    retrieval_score: float = 0.0,
     score: float = 1.0,
 ):
     is_valid_format, reason = is_valid_sequence(solution_str)

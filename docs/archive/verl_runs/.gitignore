@@ -1,0 +1,10 @@
+# Ignore all run output folders (large training artifacts, not committed to git).
+# The folder structure is preserved; file contents are local-only.
+# Exception: small NOTE.md files (commit-worthy provenance for runs with no
+# usable local artifacts) are tracked.
+*
+!.gitignore
+!README.md
+!*/
+!*/*/
+!**/NOTE.md
