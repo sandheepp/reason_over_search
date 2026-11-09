@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+pyyaml
+numpy
+tqdm
+datasets
+langid
+transformers
+sentence-transformers
+faiss-gpu-cu12==1.14.1.post1

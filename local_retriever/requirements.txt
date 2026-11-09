@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+pyyaml
+numpy
+tqdm
+datasets
+langid
+transformers
+sentence-transformers
+faiss-cpu

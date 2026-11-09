@@ -1,0 +1,469 @@
+# M5.5 production config — 2× B300 (TP=2) variant.
+#
+# Qwen3.5-0.8B GRPO on MuSiQue, ReSearch paper recipe with the
+# **F1 + 0.1 partial-credit floor + format gate** reward (the M5.5 ablation
+# knob — see training_m5_5/src/rewards/search_r1.py and
+# docs/milestone_5/MILESTONE_5_5.md §2).
+#
+# Tuned for 2× NVIDIA B300 SXM6 (275 GB HBM3e each). Mirrors the 2× A100
+# variant (m5_5_research_paper_2xa100.yaml) for the TP=2 plumbing — same
+# Qwen3.5 vocab-parallel FSDP bug workaround via `custom_parallel_plan` — but
+# inherits the 1× B300 memory tuning (micro=4, gpu_mem=0.85, act-ckpt off).
+# Math (loss, KL, ratio clip, sampling, reward, seed) is byte-identical
+# to the 1× config; only multi-GPU + naming knobs differ.
+#
+# Deltas vs m5_5_research_paper_b300.yaml (1× B300):
+#   - cluster.gpus_per_node                          : 1 → 2
+#   - policy.dtensor_cfg.tensor_parallel_size        : 1 → 2
+#   - policy.dtensor_cfg.custom_parallel_plan        : null →
+#       training_m5_5.src.parallel_plan_qwen35.custom_parallel_plan
+#       (Qwen3.5 vocab-parallel FSDP bug workaround; same hook as 2× A100)
+#   - policy.generation.vllm_cfg.tensor_parallel_size : 1 → 2
+#       (vLLM splits rollout weights + KV cache across both B300s)
+#   - logger.wandb.{project,name} (+ swanlab, mlflow) : 2xgpu-tagged
+#   - checkpointing.checkpoint_dir                   : m5_5_b300_2xgpu
+#
+# Expected speedup vs 1× B300:
+#   - Training/logprobs phases (~96% of step): ~1.7× via TP=2 weight + activation
+#     split; sub-2× because all-reduce + parallel-plan overhead eats ~15%
+#   - Generation phase (~4%): ~1.8× via vLLM TP=2 KV-cache split
+#   Cumulative ~1.7× per step → ~622 × ~5 min ≈ 52 h ≈ 2.2 d
+#   (vs ~3.8 d projected for 1× B300; saves ~1.5 d at $5.94/h spot ≈ ~$200).
+#
+# B300-specific fixes vs the A100 baseline (m5_5_research_paper.yaml):
+#
+#   # Knob                                       A100 (base) | B300
+#   1 policy.train_micro_batch_size              1           | 4
+#       The A100 baseline forced micro=1 because NeMo-RL's non-TP path
+#       (distributed/model_utils.py:1378) casts the full [B,S,V] logits to
+#       fp32 BEFORE chunking — 16.3 GB at micro=2/seq=8192 OOM'd 80 GB.
+#       B200's 192 GB already let m5_1 fly at micro=2. B300's 288 GB has
+#       ample room for micro=4 (log_softmax peak ≈ 20 GB; DTensor base
+#       ≈ 60 GB; vLLM resident ≈ 25 GB; total ≈ 105 GB ≪ 288 GB).
+#       Halves training-phase wall vs B200 baseline. Iterate down to 2 if a
+#       trajectory-length spike pushes peak.
+#   2 policy.generation.vllm_cfg.gpu_memory_utilization   0.5  | 0.85
+#       vLLM holds ~10% as resident while asleep; 0.85 × 288 ≈ 245 GB
+#       allocated, ~24 GB resident. Bigger KV cache + more concurrent
+#       rollouts in vLLM async-engine mode. Same B200 logic, scaled up.
+#   3 policy.dtensor_cfg.activation_checkpointing  true | false
+#       Recomputation overhead at ~25-30% of backward-pass time. B300 has
+#       plenty of memory to hold activations through the backward pass at
+#       seq=8192/micro=4 (≈ 20-30 GB activations peak). Disabling
+#       trades memory we have for wall-clock we don't. If memory pressure
+#       surprises, flip back to true via override — no math impact either way.
+#   4 logger.wandb.project (& swanlab, mlflow)   reason_over_search_m5_5
+#                                                | reason_over_search_b300_m5_5
+#       Keep B300 runs separated from prior A100/B200 attempts.
+#   5 logger.wandb.name (& swanlab, mlflow)      qwen3.5-0.8b-musique-m5_5_prod-seed42
+#                                                | qwen3.5-0.8b-musique-b300-m5_5-seed42
+#       Reflects hardware in the run identity.
+#   6 checkpointing.checkpoint_dir               results/grpo/m5_5_prod
+#                                                | results/grpo/m5_5_b300
+#       Keyed by hardware so a parallel A100 attempt can't collide. run.sh
+#       overrides this per (mode, seed) anyway; the static value here only
+#       matters if someone runs the config directly.
+#
+# Knobs deliberately kept on A100 defaults (not bumped despite extra memory):
+#
+#   - num_prompts_per_step: 64 (paper 256). Bumping changes the optimizer
+#     trajectory — same total work, but fewer steps means coarser advantage
+#     estimates. Stay paper-equivalent so M5.5 vs M5.1 stays a clean ablation
+#     on the reward function only.
+#   - max_total_sequence_length: 8192. Paper-faithful.
+#   - num_generations_per_prompt: 5. Paper-faithful (verl n_agent=5).
+#   - max_num_steps: 622. Paper-equivalent epoch count.
+#
+# Not enabled in this NeMo-RL v0.6.0 build (would need source patching):
+#   - FP8 / FP4 attention (B300 has 5th-gen Transformer Engine; only Megatron
+#     path exposes it. DTensor backend stays bf16.)
+#   - torch.compile on DTensor (only SGLang has the knob, not DTensor).
+#
+# Run from repo root:
+#   bash training_m5_5/scripts/run.sh --mode prod_b300
+#
+# Companion docs:
+#   - docs/milestone_5/PAPER_VS_OURS_M5.md  — paper-vs-ours mapping
+#   - docs/report/RESULTS_M5_1_B200.md      — B200 sibling postmortem (the
+#     uploader + checklist + memory-headroom evidence this config builds on)
+
+# =============================================================================
+# GRPO algorithm
+# =============================================================================
+grpo:
+  num_generations_per_prompt: 5
+  num_prompts_per_step: 64
+  max_num_steps: 622
+  max_num_epochs: 2
+  val_period: 0
+  val_at_start: false
+  val_at_end: false
+  max_val_samples: 256
+  val_batch_size: 256
+  max_rollout_turns: 10
+  normalize_rewards: true
+  use_leave_one_out_baseline: false
+  overlong_filtering: false
+  use_dynamic_sampling: false
+  dynamic_sampling_max_gen_batches: 10
+  batch_multiplier: 1
+  reward_shaping:
+    enabled: false
+    overlong_buffer_length: 128
+    overlong_buffer_penalty: 1
+    max_response_length: ${policy.max_total_sequence_length}
+    stop_properly_penalty_coef: null
+  adv_estimator:
+    name: "grpo"
+    normalize_rewards: ${grpo.normalize_rewards}
+    use_leave_one_out_baseline: ${grpo.use_leave_one_out_baseline}
+    minus_baseline: true
+  reward_scaling:
+    enabled: false
+    source_min: 0.0
+    source_max: 1.0
+    target_min: 0.0
+    target_max: 1.0
+  seq_logprob_error_threshold: null
+  seed: 42
+  async_grpo:
+    enabled: false
+    max_trajectory_age_steps: 1
+    in_flight_weight_updates: false
+    recompute_kv_cache_after_weight_updates: false
+
+# =============================================================================
+# Loss
+# =============================================================================
+loss_fn:
+  reference_policy_kl_penalty: 0.001
+  reference_policy_kl_type: "k3"
+  kl_input_clamp_value: 20.0
+  kl_output_clamp_value: 10.0
+  ratio_clip_min: 0.2
+  ratio_clip_max: 0.2
+  ratio_clip_c: null
+  use_on_policy_kl_approximation: false
+  use_importance_sampling_correction: false
+  truncated_importance_sampling_ratio: null
+  truncated_importance_sampling_ratio_min: null
+  truncated_importance_sampling_type: tis
+  sequence_level_importance_ratios: false
+  token_level_loss: true
+  force_on_policy_ratio: false
+  use_kl_in_reward: false
+
+# =============================================================================
+# Checkpointing
+# =============================================================================
+checkpointing:
+  enabled: true
+  # [B300 fix 6] hardware-keyed dir so parallel A100 / B200 runs can't collide.
+  checkpoint_dir: "results/grpo/m5_5_b300_2xgpu"
+  metric_name: null
+  higher_is_better: false
+  keep_top_k: null
+  # [resume policy 2026-05-16] save_period: 50 → 10 so a crash never costs
+  # more than 10 steps. 311 × 1/10 = 31 saves × ~3.2 GB = ~99 GB worst case.
+  # watch_resources.sh auto-prunes ckpts >5 deep when disk hits WARN.
+  save_period: 10
+  checkpoint_must_save_by: null
+  model_save_format: "safetensors"
+  save_consolidated: true
+  save_optimizer: false
+
+# =============================================================================
+# Policy (model + training + generation)
+# =============================================================================
+policy:
+  model_name: "Qwen/Qwen3.5-0.8B"
+  tokenizer:
+    name: ${policy.model_name}
+    chat_template_kwargs: null
+  hf_config_overrides: {}
+
+  train_global_batch_size: 320
+  # [B300 fix 1] 288 GB lets us go from A100 micro=1 to micro=4. log_softmax
+  # peak ≈ 20 GB at micro=4/seq=8192; DTensor base ≈ 60 GB; vLLM resident
+  # ≈ 24 GB at gpu_memory_utilization=0.85. Total peak ≈ 105 GB ≪ 288 GB.
+  # 4 micro-batches per step instead of 320 → ~4× fewer DTensor bookkeeping
+  # roundtrips on top of the larger-batch matmul efficiency.
+  train_micro_batch_size: 4
+  generation_batch_size: 32
+  logprob_batch_size: ${policy.train_micro_batch_size}
+  max_total_sequence_length: 8192
+  precision: "bfloat16"
+  logprob_chunk_size: null
+  offload_optimizer_for_logprob: false
+
+  # ---- DTensor backend (v2 required for Qwen3.5 hybrid arch) ----
+  dtensor_cfg:
+    _v2: true
+    enabled: true
+    cpu_offload: false
+    sequence_parallel: false
+    # [B300 fix 3] Activations fit through the backward pass with room to
+    # spare; pay the activation memory to skip the ~25-30% recompute tax.
+    activation_checkpointing: false
+    # [2xgpu delta] TP=2 across the two B300s. With Qwen3.5's hybrid
+    # GatedDeltaNet + attention arch, the default DTensor parallel plan hits
+    # a vocab-parallel FSDP bug; the custom plan below shards along the
+    # right dims (same workaround as 2× A100 — see
+    # docs/milestone_5/HARDWARE_FIXES.md §12).
+    tensor_parallel_size: 2
+    context_parallel_size: 1
+    custom_parallel_plan: training_m5_5.src.parallel_plan_qwen35.custom_parallel_plan
+    automodel_kwargs: {}
+    lora_cfg:
+      enabled: false
+      target_modules: []
+      exclude_modules: []
+      match_all_linear: true
+      dim: 8
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "post"
+      lora_A_init: "xavier"
+      use_triton: true
+
+  # ---- Megatron backend off ----
+  megatron_cfg:
+    enabled: false
+    force_reconvert_from_hf: false
+    empty_unused_memory_level: 1
+    activation_checkpointing: false
+    converter_type: "Qwen2ForCausalLM"
+    tensor_model_parallel_size: 1
+    expert_tensor_parallel_size: 1
+    expert_model_parallel_size: 1
+    pipeline_model_parallel_size: 1
+    num_layers_in_first_pipeline_stage: null
+    num_layers_in_last_pipeline_stage: null
+    context_parallel_size: 1
+    pipeline_dtype: ${policy.precision}
+    sequence_parallel: false
+    freeze_moe_router: true
+    moe_router_dtype: "fp64"
+    moe_router_load_balancing_type: "none"
+    moe_router_bias_update_rate: 0.0
+    moe_permute_fusion: false
+    apply_rope_fusion: true
+    bias_activation_fusion: true
+    defer_fp32_logits: false
+    moe_per_layer_logging: false
+    moe_enable_deepep: false
+    moe_token_dispatcher_type: "alltoall"
+    moe_shared_expert_overlap: false
+    gradient_accumulation_fusion: false
+    peft:
+      enabled: false
+      target_modules: []
+      exclude_modules: []
+      dim: 8
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "post"
+      lora_A_init_method: "xavier"
+      lora_B_init_method: "zero"
+      a2a_experimental: false
+      lora_dtype: None
+    optimizer:
+      optimizer: "adam"
+      lr: 1.0e-6
+      min_lr: 1.0e-7
+      weight_decay: 0.01
+      bf16: true
+      fp16: false
+      params_dtype: "float32"
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1e-8
+      sgd_momentum: 0.9
+      use_distributed_optimizer: true
+      use_precision_aware_optimizer: true
+      clip_grad: ${policy.max_grad_norm}
+      optimizer_cpu_offload: false
+      optimizer_offload_fraction: 0.0
+    scheduler:
+      start_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
+      end_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
+      weight_decay_incr_style: "constant"
+      lr_decay_style: "constant"
+      lr_decay_iters: 1000
+      lr_warmup_iters: 0
+      lr_warmup_init: 1.0e-7
+    distributed_data_parallel_config:
+      grad_reduce_in_fp32: false
+      overlap_grad_reduce: true
+      overlap_param_gather: true
+      use_custom_fsdp: false
+      data_parallel_sharding_strategy: "optim_grads_params"
+    fp8_cfg:
+      enabled: false
+      fp8: "e4m3"
+      fp8_recipe: "blockwise"
+      fp8_param: false
+    env_vars: null
+
+  draft:
+    enabled: false
+    model_name: null
+    loss_weight: 0.1
+    num_layers: null
+    aux_layer_indices: null
+
+  # [Qwen3.5 required] sequence_packing OFF — GatedDeltaNet kernel crashes
+  # with packed sequences. dynamic_batching replaces it.
+  dynamic_batching:
+    enabled: true
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    logprob_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.logprob_batch_size}}
+    sequence_length_round: 64
+
+  sequence_packing:
+    enabled: false
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    logprob_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.logprob_batch_size}}
+    algorithm: "modified_first_fit_decreasing"
+    sequence_length_round: 64
+
+  make_sequence_length_divisible_by: ${policy.dtensor_cfg.tensor_parallel_size}
+  max_grad_norm: 1.0
+
+  # ---- Optimizer (DTensor path; AdamW) ----
+  optimizer:
+    name: "torch.optim.AdamW"
+    kwargs:
+      lr: 1.0e-6
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+      eps: 1e-8
+      foreach: false
+      fused: true
+
+  # ---- LR schedule: constant (paper-faithful) ----
+  scheduler:
+    - name: "torch.optim.lr_scheduler.LinearLR"
+      kwargs:
+        start_factor: 1.0
+        end_factor: 1.0
+        total_iters: 1
+    - name: "torch.optim.lr_scheduler.ConstantLR"
+      kwargs:
+        factor: 1.0
+        total_iters: 10000000000
+    - milestones: [1]
+
+  # ---- Generation (vLLM, colocated on the single B300) ----
+  generation:
+    backend: "vllm"
+    max_new_tokens: 1024
+    temperature: 1.0
+    top_p: 1.0
+    top_k: null
+    stop_token_ids: null
+    stop_strings: ["</tool_call>", "</search>", "</answer>"]
+    mcore_generation_config:
+      buffer_size_gb: 10
+      num_cuda_graphs: 4
+      block_size_tokens: 256
+      use_cuda_graphs_for_non_decode_steps: true
+      enable_chunked_prefill: true
+      unified_memory_level: 0
+      max_tokens: 16384
+    vllm_cfg:
+      async_engine: true
+      precision: ${policy.precision}
+      kv_cache_dtype: "auto"
+      # [2xgpu delta] vLLM TP=2 splits rollout weights + KV cache across both B300s.
+      tensor_parallel_size: 2
+      pipeline_parallel_size: 1
+      expert_parallel_size: 1
+      # [B300 fix 2] 0.85 × 288 ≈ 245 GB to vLLM; sleep-mode resident ~24 GB
+      # leaves ~110 GB of headroom for policy peak (DTensor + log_softmax)
+      # plus ~30 GB cushion. Bigger KV cache = more concurrent rollouts.
+      gpu_memory_utilization: 0.85
+      max_model_len: ${policy.max_total_sequence_length}
+      enforce_eager: false
+      use_deep_gemm: false
+      num_last_layers_in_bf16: 0
+      num_first_layers_in_bf16: 0
+      enable_vllm_metrics_logger: true
+      vllm_metrics_logger_interval: 0.5
+    vllm_kwargs: {}
+    colocated:
+      enabled: true
+      resources:
+        gpus_per_node: null
+        num_nodes: null
+
+# =============================================================================
+# Data — MuSiQue (M5 single-dataset training)
+# =============================================================================
+data:
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  shuffle: true
+  num_workers: 1
+  use_multiple_dataloader: false
+
+  train:
+    dataset_name: search_r1
+    data_path: data/training/musique/train.parquet
+    arm: qwen_native
+    seed: ${grpo.seed}
+
+  validation: null
+
+  default:
+    prompt_file: training_m5_5/src/prompts/m5_qwen35_user.txt
+    system_prompt_file: null
+    processor: search_r1_processor
+    env_name: search_r1
+
+# =============================================================================
+# Env — Search-R1 retrieval Ray actor
+# =============================================================================
+env:
+  search_r1:
+    arm: qwen_native
+    retriever_url: "http://127.0.0.1:3005"
+    top_n: 5
+    max_turns: 10
+    max_obs_chars: 1024
+    request_timeout_s: 30.0
+
+# =============================================================================
+# Logging
+# =============================================================================
+logger:
+  log_dir: "logs"
+  num_val_samples_to_print: 5
+  wandb_enabled: true
+  tensorboard_enabled: false
+  mlflow_enabled: false
+  swanlab_enabled: false
+  monitor_gpus: true
+  wandb:
+    # [B300 fix 4] separate project so B300 runs don't mix with A100/B200.
+    # [2xgpu delta] -2xgpu suffix in the run name to distinguish from 1×B300.
+    project: "reason_over_search_b300_m5_5"
+    name: "qwen3.5-0.8b-musique-b300-m5_5-2xgpu-seed42"
+  swanlab:
+    project: "reason_over_search_b300_m5_5"
+    name: "qwen3.5-0.8b-musique-b300-m5_5-2xgpu-seed42"
+  tensorboard: {}
+  mlflow:
+    experiment_name: "reason_over_search_b300_m5_5"
+    run_name: "qwen3.5-0.8b-musique-b300-m5_5-2xgpu-seed42"
+    tracking_uri: "http://localhost:5000"
+  gpu_monitoring:
+    collection_interval: 10
+    flush_interval: 10
+
+# =============================================================================
+# Cluster
+# =============================================================================
+cluster:
+  # [2xgpu delta] both B300s on the single Verda node.
+  gpus_per_node: 2
+  num_nodes: 1

@@ -1,0 +1,447 @@
+# GRPO training config — Search-R1 on Qwen3.5-2B, 1× A100 80GB.
+#
+# Two concerns are tagged distinctly throughout:
+#   [paper]  : Search-R1 hyperparameter, cross-checked against
+#              Search-R1/scripts/nq_hotpotqa/v0.2/train_grpo.sh — the EM-only
+#              baseline that produced the published GRPO checkpoints we eval'd
+#              in M1. Identical between 1× and 2× A100 configs.
+#   [memory] : hardware-tuning knob. Differs between 1× and 2× A100 layouts;
+#              free to retune after the first run on real hardware.
+#
+# Default flavour: qwen_native chat template + Qwen3.5-2B-Base. The bash
+# wrappers (training/scripts/run_grpo_1xa100.sh) override model + arm + seed
+# via Hydra. Audit landing page: docs/training/README.md.
+
+# =============================================================================
+# GRPO algorithm
+# =============================================================================
+grpo:
+  # [paper] verl `n_agent=5` (GRPO group size G).
+  num_generations_per_prompt: 5
+  # [paper] 102 prompts × 5 generations = 510 trajectories per step.
+  # Matches policy.train_global_batch_size below exactly — one optimizer.step()
+  # per training step, pure on-policy GRPO (the upstream NeMo-RL convention,
+  # see grpo_math_1B.yaml's 32×16=512). Note this is 5× FEWER trajectories per
+  # step than verl's 2560 (512 prompts × 5 gen) and the gradient is applied
+  # 10× less often. See docs/edu/BATCH_MATH.md for the full breakdown of why
+  # gbs == prompts × gen matters and what regime change happens if it doesn't.
+  num_prompts_per_step: 102
+  # [paper] verl total_training_steps=1005 (supersedes paper text's "500"; the
+  # published checkpoints we evaluated in M1 came from 1005-step runs).
+  max_num_steps: 1005
+  max_num_epochs: 1   # capped by max_num_steps anyway
+  # [DISABLED for first-pass training] — paper uses test_freq=100 + val_before
+  # _train=true. We're keeping validation off for now to focus on verifying
+  # training mechanics; will re-enable once the loop is running cleanly. See
+  # docs/training/VALIDATION.md for the planned re-enable steps.
+  val_period: 0          # 0 → no periodic validation
+  val_at_start: false
+  val_at_end: false
+  max_val_samples: 256   # unused while val is off; kept to satisfy the schema
+  val_batch_size: 256
+  # [paper] verl max_turns=4 (per-rollout search-tool call cap).
+  max_rollout_turns: 4
+  # Standard GRPO settings.
+  normalize_rewards: true
+  use_leave_one_out_baseline: true
+  overlong_filtering: false
+  use_dynamic_sampling: false
+  dynamic_sampling_max_gen_batches: 10
+  batch_multiplier: 1
+  reward_shaping:
+    enabled: false
+    overlong_buffer_length: 128
+    overlong_buffer_penalty: 1
+    max_response_length: ${policy.max_total_sequence_length}
+    stop_properly_penalty_coef: null
+  adv_estimator:
+    name: "grpo"
+    normalize_rewards: ${grpo.normalize_rewards}
+    use_leave_one_out_baseline: ${grpo.use_leave_one_out_baseline}
+    minus_baseline: true
+  reward_scaling:
+    enabled: false
+    source_min: 0.0
+    source_max: 1.0
+    target_min: 0.0
+    target_max: 1.0
+  seq_logprob_error_threshold: null
+  seed: 42   # overridden by --seed in the bash wrapper
+  async_grpo:
+    enabled: false
+    max_trajectory_age_steps: 1
+    in_flight_weight_updates: false
+    recompute_kv_cache_after_weight_updates: false
+
+# =============================================================================
+# Loss
+# =============================================================================
+loss_fn:
+  # [paper] verl kl_loss_coef=0.001.
+  reference_policy_kl_penalty: 0.001
+  # [paper] verl kl_loss_type=low_var_kl ≡ NeMo-RL k3 (both compute Schulman
+  # 2020 k3: exp(ref-log) - (ref-log) - 1). See docs/training/VERL_REFERENCE.md §2.
+  reference_policy_kl_type: "k3"
+  kl_input_clamp_value: 20.0
+  kl_output_clamp_value: 10.0
+  # [paper] PPO clip ε=0.2.
+  ratio_clip_min: 0.2
+  ratio_clip_max: 0.2
+  ratio_clip_c: null
+  use_on_policy_kl_approximation: false
+  use_importance_sampling_correction: false
+  truncated_importance_sampling_ratio: null
+  truncated_importance_sampling_ratio_min: null
+  truncated_importance_sampling_type: tis
+  sequence_level_importance_ratios: false
+  token_level_loss: true
+  force_on_policy_ratio: false
+  use_kl_in_reward: false
+
+# =============================================================================
+# Checkpointing — [DISABLED for first-pass training]
+# =============================================================================
+# Re-enable once we've verified the training loop is mechanically sound. The
+# rest of the keys are kept (with safe defaults) so the schema validates and
+# re-enabling is a single `enabled: true` flip.
+checkpointing:
+  enabled: false
+  checkpoint_dir: "results/grpo/qwen3.5-2b"
+  metric_name: "val:accuracy"
+  higher_is_better: true
+  keep_top_k: 3
+  save_period: 100
+  checkpoint_must_save_by: null
+  model_save_format: "safetensors"
+  save_consolidated: false
+  save_optimizer: true
+
+# =============================================================================
+# Policy (model + training + generation)
+# =============================================================================
+policy:
+  # Default = base; override on CLI to Qwen/Qwen3.5-2B for the hybrid variant.
+  model_name: "Qwen/Qwen3.5-2B-Base"
+  tokenizer:
+    name: ${policy.model_name}
+    # Hybrid variant: pass enable_thinking=true to surface <think> blocks.
+    chat_template_kwargs: null
+  hf_config_overrides: {}
+
+  # 510 trajectories per gradient update — matches num_prompts_per_step ×
+  # num_generations_per_prompt above. This is the "gbs == prompts × gen"
+  # convention: one optimizer.step() per training step, pure on-policy.
+  # Set lower (e.g., 51) to mini-batch within a step like verl does; that
+  # would do 10 gradient updates per step (slightly off-policy after the
+  # first, bounded by clip_ratio=0.2). docs/edu/BATCH_MATH.md walks through
+  # the trade-off; loss_fn.force_on_policy_ratio (currently false) would
+  # assert this convention if you flip it on.
+  train_global_batch_size: 510
+  # [memory] Qwen3.5-2B requires sequence_packing=false (see below) so
+  # micro-batches are not token-dense. Smoke-tested at micro=2 on 1× A100 80GB;
+  # micro=4 OOMs without packing. Upstream anchors: 1.5B@seq=512@micro=4
+  # (grpo_math_1B.yaml, packing on); 8B@seq=4096@micro=1.
+  train_micro_batch_size: 2
+  generation_batch_size: 32
+  logprob_batch_size: ${policy.train_micro_batch_size}
+  # [paper] verl max_prompt_length=4096.
+  max_total_sequence_length: 4096
+  # [paper] bf16.
+  precision: "bfloat16"
+  logprob_chunk_size: null
+  offload_optimizer_for_logprob: false
+
+  # ---- DTensor backend (NeMo-RL default; verl uses FSDP — equivalent intent) ----
+  dtensor_cfg:
+    _v2: true
+    enabled: true
+    cpu_offload: false       # [memory] flip if OOM under group=5
+    sequence_parallel: false
+    # [memory] ON — bf16 + 4k seq + group=5 will pressure memory.
+    activation_checkpointing: true
+    tensor_parallel_size: 1
+    context_parallel_size: 1
+    custom_parallel_plan: null
+    automodel_kwargs: {}
+    lora_cfg:
+      enabled: false
+      target_modules: []
+      exclude_modules: []
+      match_all_linear: true
+      dim: 8
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "post"
+      lora_A_init: "xavier"
+      use_triton: true
+
+  # ---- Megatron backend (off; we use DTensor for 2B) ----
+  megatron_cfg:
+    enabled: false
+    force_reconvert_from_hf: false
+    empty_unused_memory_level: 1
+    activation_checkpointing: false
+    converter_type: "Qwen2ForCausalLM"
+    tensor_model_parallel_size: 1
+    expert_tensor_parallel_size: 1
+    expert_model_parallel_size: 1
+    pipeline_model_parallel_size: 1
+    num_layers_in_first_pipeline_stage: null
+    num_layers_in_last_pipeline_stage: null
+    context_parallel_size: 1
+    pipeline_dtype: ${policy.precision}
+    sequence_parallel: false
+    freeze_moe_router: true
+    moe_router_dtype: "fp64"
+    moe_router_load_balancing_type: "none"
+    moe_router_bias_update_rate: 0.0
+    moe_permute_fusion: false
+    apply_rope_fusion: true
+    bias_activation_fusion: true
+    defer_fp32_logits: false
+    moe_per_layer_logging: false
+    moe_enable_deepep: false
+    moe_token_dispatcher_type: "alltoall"
+    moe_shared_expert_overlap: false
+    gradient_accumulation_fusion: false
+    peft:
+      enabled: false
+      target_modules: []
+      exclude_modules: []
+      dim: 8
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "post"
+      lora_A_init_method: "xavier"
+      lora_B_init_method: "zero"
+      a2a_experimental: false
+      lora_dtype: None
+    optimizer:
+      optimizer: "adam"
+      lr: 1.0e-6
+      min_lr: 1.0e-7
+      weight_decay: 0.01
+      bf16: true
+      fp16: false
+      params_dtype: "float32"
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1e-8
+      sgd_momentum: 0.9
+      use_distributed_optimizer: true
+      use_precision_aware_optimizer: true
+      clip_grad: ${policy.max_grad_norm}
+      optimizer_cpu_offload: false
+      optimizer_offload_fraction: 0.0
+    scheduler:
+      start_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
+      end_weight_decay: ${policy.megatron_cfg.optimizer.weight_decay}
+      weight_decay_incr_style: "constant"
+      lr_decay_style: "constant"
+      lr_decay_iters: 1000
+      lr_warmup_iters: 286   # 0.285 × 1005
+      lr_warmup_init: 1.0e-7
+    distributed_data_parallel_config:
+      grad_reduce_in_fp32: false
+      overlap_grad_reduce: true
+      overlap_param_gather: true
+      use_custom_fsdp: false
+      data_parallel_sharding_strategy: "optim_grads_params"
+    fp8_cfg:
+      enabled: false
+      fp8: "e4m3"
+      fp8_recipe: "blockwise"
+      fp8_param: false
+    env_vars: null
+
+  draft:
+    enabled: false
+    model_name: null
+    loss_weight: 0.1
+    num_layers: null
+    aux_layer_indices: null
+
+  # [Qwen3.5 required] sequence_packing must be OFF for Qwen3.5. The model
+  # interleaves GatedDeltaNet (linear-attention / Mamba-style) layers with full
+  # attention. The torch_chunk_gated_delta_rule kernel raises a CUDA illegal
+  # memory access during get_logprobs() when sequences are packed together.
+  # dynamic_batching is the replacement: fills micro-batches by token budget
+  # instead of by sequence count, recovering most of the throughput.
+  # See training/fix/CHANGES.md §5 for the full incident note.
+  dynamic_batching:
+    enabled: true
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    logprob_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.logprob_batch_size}}
+    sequence_length_round: 64
+
+  sequence_packing:
+    enabled: false   # [Qwen3.5 required] GDN kernel crashes with packing — see above
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    logprob_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.logprob_batch_size}}
+    algorithm: "modified_first_fit_decreasing"
+    sequence_length_round: 64
+
+  make_sequence_length_divisible_by: ${policy.dtensor_cfg.tensor_parallel_size}
+  max_grad_norm: 1.0
+
+  # ---- Optimizer (DTensor path; AdamW) ----
+  optimizer:
+    name: "torch.optim.AdamW"
+    kwargs:
+      # [paper] verl lr=1e-6.
+      lr: 1.0e-6
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+      eps: 1e-8
+      foreach: false
+      fused: false
+
+  # ---- LR schedule: linear warmup over 286 iters (= 0.285 × 1005), then constant ----
+  scheduler:
+    - name: "torch.optim.lr_scheduler.LinearLR"
+      kwargs:
+        start_factor: 0.1
+        end_factor: 1.0
+        # [paper] verl lr_warmup_steps_ratio=0.285 × 1005 = 286.
+        total_iters: 286
+    - name: "torch.optim.lr_scheduler.ConstantLR"
+      kwargs:
+        factor: 1.0
+        total_iters: 10000000000
+    - milestones: [286]
+
+  # ---- Generation (vLLM) ----
+  generation:
+    backend: "vllm"
+    # [paper] verl max_response_length=500.
+    max_new_tokens: 500
+    # [paper] verl rollout temperature=1.
+    temperature: 1.0
+    # [paper] verl rollout top_p=1 (no nucleus truncation).
+    top_p: 1.0
+    top_k: null
+    stop_token_ids: null
+    # Initial stop strings for vLLM — REQUIRED for turn 1. The env's
+    # `next_stop_strings` only kicks in after the first env.step(), so without
+    # this fallback the first vLLM call has no stop strings and the model
+    # generates past `</tool_call>` / `</search>`, hallucinating fake
+    # tool_response blocks. Union of both arms' tags is safe — neither arm
+    # emits the other arm's closing tag in normal generation.
+    stop_strings: ["</tool_call>", "</search>", "</answer>"]
+    mcore_generation_config:
+      buffer_size_gb: 10
+      num_cuda_graphs: 4
+      block_size_tokens: 256
+      use_cuda_graphs_for_non_decode_steps: true
+      enable_chunked_prefill: true
+      unified_memory_level: 0
+      max_tokens: 16384
+    vllm_cfg:
+      async_engine: false
+      precision: ${policy.precision}
+      kv_cache_dtype: "auto"
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      expert_parallel_size: 1
+      # [memory] 0.6 is upstream's tested-safe default across every example
+      # config (1.5B math, 8B math, 70B math). Conservative for first run on
+      # an 80 GB A100; raise to 0.75 once we've seen the actual VRAM profile
+      # in W&B (`gpu_monitoring`).
+      gpu_memory_utilization: 0.6
+      max_model_len: ${policy.max_total_sequence_length}
+      enforce_eager: false
+      use_deep_gemm: false
+      num_last_layers_in_bf16: 0
+      num_first_layers_in_bf16: 0
+      enable_vllm_metrics_logger: true
+      vllm_metrics_logger_interval: 0.5
+    vllm_kwargs: {}
+    colocated:
+      enabled: true
+      resources:
+        gpus_per_node: null
+        num_nodes: null
+
+# =============================================================================
+# Data — Search-R1 overlay
+# =============================================================================
+data:
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  shuffle: true
+  num_workers: 1
+  use_multiple_dataloader: false
+
+  train:
+    dataset_name: search_r1
+    data_path: data/training/nq_hotpotqa_train/train.parquet
+    arm: qwen_native            # override to "paper" for ablation arm
+    seed: ${grpo.seed}
+
+  # [DISABLED for first-pass training] — re-add the validation dataset block
+  # once `grpo.val_period > 0`. Test parquet stays committed at
+  # data/training/nq_hotpotqa_train/test.parquet, ready when needed.
+  validation: null
+
+  default:
+    # qwen_native default: system message is the brief tool-role description
+    # only; the reasoning/answer protocol rides in the user message (prompt_file)
+    # — same structure as the paper arm, just with <tool_call>/<tool_response>
+    # instead of <search>/<information>. The bash wrapper overrides both fields
+    # for arm=paper:
+    #   data.default.prompt_file=training/src/prompts/search_r1_paper.txt
+    #   data.default.system_prompt_file=null
+    prompt_file: training/src/prompts/search_r1_qwen_native_user.txt
+    system_prompt_file: training/src/prompts/search_r1_qwen_native_system.txt
+    processor: search_r1_processor
+    env_name: search_r1
+
+# =============================================================================
+# Env — Search-R1 retrieval Ray actor
+# =============================================================================
+env:
+  search_r1:
+    # Must match data.{train,validation,default}.arm.
+    arm: qwen_native
+    # [paper] verl retriever.url (ours uses /batch_search; see local_retriever/).
+    retriever_url: "http://127.0.0.1:3005"
+    # [paper] verl retriever.topk=3.
+    top_n: 3
+    # [paper] verl max_turns=4.
+    max_turns: 4
+    # [paper] verl max_obs_length=500 tokens. We use a char proxy
+    # (~4 char/token) since parsers.py is pure-Python.
+    max_obs_chars: 2000
+    request_timeout_s: 30.0
+
+# =============================================================================
+# Logging
+# =============================================================================
+logger:
+  log_dir: "logs"
+  num_val_samples_to_print: 5
+  wandb_enabled: true
+  tensorboard_enabled: false
+  mlflow_enabled: false
+  swanlab_enabled: false
+  monitor_gpus: true
+  wandb:
+    project: "reason-over-search"
+    name: "qwen3.5-2b-base-search_r1-qwen_native-seed42"
+  swanlab:
+    project: "reason-over-search"
+    name: "qwen3.5-2b-base-search_r1-qwen_native-seed42"
+  tensorboard: {}
+  mlflow:
+    experiment_name: "reason-over-search"
+    run_name: "qwen3.5-2b-base-search_r1-qwen_native-seed42"
+    tracking_uri: "http://localhost:5000"
+  gpu_monitoring:
+    collection_interval: 10
+    flush_interval: 10
+
+# =============================================================================
+# Cluster
+# =============================================================================
+cluster:
+  gpus_per_node: 1
+  num_nodes: 1

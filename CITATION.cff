@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite the paper."
+title: "Reinforcement Learning with Verifiable Rewards for Small Search Agents"
+type: software
+authors:
+  - family-names: Jayadas
+    given-names: Gaurisankar
+  - family-names: Plaat
+    given-names: Aske
+  - family-names: Serra-Gómez
+    given-names: Álvaro
+  - family-names: P
+    given-names: Sandheep
+preferred-citation:
+  type: article
+  title: "Reinforcement Learning with Verifiable Rewards for Small Search Agents"
+  authors:
+    - family-names: Jayadas
+      given-names: Gaurisankar
+    - family-names: Plaat
+      given-names: Aske
+    - family-names: Serra-Gómez
+      given-names: Álvaro
+    - family-names: P
+      given-names: Sandheep
+  year: 2026
+  url: "https://arxiv.org/abs/2609.28765"
+  identifiers:
+    - type: other
+      value: "arXiv:2609.28765"

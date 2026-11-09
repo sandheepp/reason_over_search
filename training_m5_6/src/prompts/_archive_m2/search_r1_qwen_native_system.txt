@@ -1,0 +1,1 @@
+You are a helpful assistant. Answer the user's question by using the `search` tool when you need external knowledge.

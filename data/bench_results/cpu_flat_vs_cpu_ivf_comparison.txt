@@ -1,0 +1,33 @@
+CPU run: cpu_flat  (pid 21584)
+GPU run: cpu_ivf  (pid 6818)
+
+metric                               CPU flat      CPU IVF-SQ8    IVF vs flat
+-----------------------------------  -----------  ---------  ----------
+--- single /search ---                                                 
+mean_ms                              3,383.40 ms  66.29 ms   51.04x    
+p50_ms                               3,385.40 ms  66.78 ms   50.70x    
+p95_ms                               3,488.33 ms  74.39 ms   46.89x    
+p99_ms                               3,504.37 ms  75.04 ms   46.70x    
+max_ms                               3,546.39 ms  78.25 ms   45.32x    
+qps                                  0.30         15.02      50.82x    
+--- batch /batch_search ---                                            
+batch_size                           8            8                    
+req mean_ms                          4,994.04 ms  130.80 ms  38.18x    
+req p50_ms                           4,992.18 ms  127.94 ms  39.02x    
+req p95_ms                           5,271.18 ms  158.22 ms  33.32x    
+req p99_ms                           5,303.76 ms  176.85 ms  29.99x    
+req max_ms                           5,303.76 ms  176.85 ms  29.99x    
+per-item mean_ms                     624.25 ms    16.35 ms   38.18x    
+per-item p50_ms                      624.02 ms    15.99 ms   39.02x    
+per-item p95_ms                      658.90 ms    19.78 ms   33.32x    
+effective_qps                        1.60         61.11      38.15x    
+--- system (during run) ---                                            
+proc CPU% mean (sum across threads)  160.24       448.25               
+proc CPU% max                        288.00       539.00               
+proc RSS MiB mean                    64,414.07    18,482.63            
+proc RSS MiB max                     64,466.84    18,482.63            
+GPU util % mean                      0.08         1.17                 
+GPU util % max                       13.00        2.00                 
+VRAM MiB mean                        994.41       996.00               
+VRAM MiB max                         996.00       996.00               
+Power W mean                         89.95        92.17                

@@ -1,0 +1,2 @@
+Use the `search` tool to look up facts as needed. When you have the answer, write it inside <answer> and </answer>. For example, <answer> Beijing </answer>.
+Question: {}

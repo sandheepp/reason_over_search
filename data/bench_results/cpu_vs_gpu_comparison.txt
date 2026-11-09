@@ -1,0 +1,33 @@
+CPU run: cpu_ivf  (pid 6818)
+GPU run: gpu_ivf  (pid 7338)
+
+metric                               CPU IVF    GPU IVF    GPU vs CPU
+-----------------------------------  ---------  ---------  ----------
+--- single /search ---                                               
+mean_ms                              66.29 ms   16.17 ms   4.10x     
+p50_ms                               66.78 ms   14.75 ms   4.53x     
+p95_ms                               74.39 ms   24.94 ms   2.98x     
+p99_ms                               75.04 ms   25.90 ms   2.90x     
+max_ms                               78.25 ms   27.36 ms   2.86x     
+qps                                  15.02      60.83      4.05x     
+--- batch /batch_search ---                                          
+batch_size                           8          8                    
+req mean_ms                          130.80 ms  25.47 ms   5.14x     
+req p50_ms                           127.94 ms  21.97 ms   5.82x     
+req p95_ms                           158.22 ms  32.97 ms   4.80x     
+req p99_ms                           176.85 ms  53.55 ms   3.30x     
+req max_ms                           176.85 ms  53.55 ms   3.30x     
+per-item mean_ms                     16.35 ms   3.18 ms    5.14x     
+per-item p50_ms                      15.99 ms   2.75 ms    5.82x     
+per-item p95_ms                      19.78 ms   4.12 ms    4.80x     
+effective_qps                        61.11      312.68     5.12x     
+--- system (during run) ---                                          
+proc CPU% mean (sum across threads)  448.25     144.33               
+proc CPU% max                        539.00     199.00               
+proc RSS MiB mean                    18,482.63  4,101.76             
+proc RSS MiB max                     18,482.63  4,126.80             
+GPU util % mean                      1.17       9.17                 
+GPU util % max                       2.00       27.00                
+VRAM MiB mean                        996.00     22,195.00            
+VRAM MiB max                         996.00     22,204.00            
+Power W mean                         92.17      94.48                

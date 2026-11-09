@@ -1,0 +1,113 @@
+# Python
+__pycache__/
+*.egg-info/
+**/.DS_Store
+.playwright-mcp/
+.mcp.json
+
+# Local Retriever — these are symlinks to /corpus, /indexes, /models at repo root
+# (set up in BOOTSTRAP_NEW_INSTANCE.md). No trailing slash so the rules match
+# symlinks (which git treats as files), not just real directories.
+local_retriever/corpus
+local_retriever/indexes
+local_retriever/models
+
+# M3 evaluation runtime data (corpus + 16 GB IVF index + encoder model;
+# provided locally via symlinks
+# and a local 16 GB IVF-SQ8 index file — too large for git)
+/corpus/
+/indexes/
+/models/
+
+# Evaluation
+evaluation_search_r1/search_r1_base_model/
+evaluation_search_r1/search_r1_instruct_model/
+evaluation_search_r1/qwen_25_3b_instruct/
+
+# M3 evaluation: Qwen3-0.6B model checkpoints (HF safetensors, ~1.5 GB each)
+eval/qwen_3_0.6b/
+eval/qwen_3_0.6b_v0/
+eval/qwen_3_0.6b_v0_no_ex/
+
+# M4 evaluation: Qwen3.5-0.8B model checkpoints (HF safetensors, ~1.7 GB each)
+eval/qwen3.5_0.8b/
+eval/qwen3.5_0.8b_base/
+
+# evaluation_research/ + evaluation_qwen35/: results dirs (per-run artifacts; aggregated reports live in docs/)
+evaluation_research/results/
+evaluation_qwen35/results/
+
+# Environment
+/.venv
+local_retriever/.venv
+scripts/.env
+training/.env
+
+# Data: eval jsonls (data/, data_subsample/) are tracked via LFS. Training
+# parquets at data/training/ are also committed via LFS (see .gitattributes).
+# Keep the HF download cache out.
+data/.cache/
+.cache/
+
+
+# Run logs
+*.log
+*.pid
+*.pid_text
+
+# M3 / M4 sbatch / interactive job logs (per-job stdout/stderr; large retriever + sglang traces)
+logs/m3_*.out
+logs/m3_*.err
+logs/m4_*.out
+logs/m4_*.err
+logs/m4_*.log
+
+# Training run artifacts (commit smoke trace jsonls explicitly; ignore W&B dirs and checkpoints)
+logs/**/wandb/
+results/grpo/
+
+# Autoresearch working log
+results.tsv
+
+# Alstom internship (private)
+docs/alstom/
+
+# Zeta Alpha meeting prep (private)
+docs/zeta_alpha/
+
+# GPT-NL meeting prep (private)
+docs/gpt_nl/
+
+# Sankar (private)
+docs/sankar/
+
+# Thesis Overleaf project: the LaTeX submission source, a standalone git repo
+# cloned via the Overleaf git bridge and synced separately from this repo.
+# Only the clone is ignored; the versioned section drafts in docs/thesis/*.md
+# (plus CONVERSATION_CONTEXT.md / README.md) are tracked.
+docs/thesis/overleaf/
+
+# Presentation/handout PDFs rendered into docs/thesis (e.g. PRESENTATION_*.pdf)
+# are build artifacts of the tracked PRESENTATION_*.md drafts; do not commit.
+docs/thesis/*.pdf
+
+# Local tooling: Obsidian vault config and Claude Code workspace state
+.obsidian/
+.claude/
+
+# M9 / M9.1 eval checkpoints (HF format, ~3.3 GB / step, not source-tracked)
+eval/m9/
+
+# Superseded v1 training-dynamics figures (the docs reference training_dynamics_assets_v2/).
+# This 93-file dir is the first-pass render; it was replaced by the 120-file _v2 set after
+# the seed-42 fate-metric recompute, and is referenced by no doc. Ignored to avoid shipping
+# a stale near-duplicate of the tracked _v2 figures.
+docs/report/training_dynamics_assets/
+
+# Private job-application materials, per-company folders (mirrors docs/zeta_alpha/)
+docs/albert_heijn/
+
+# Self-contained Alstom RCA harness POC (root-level; its own venv/data/models).
+# Anchored to repo root with a leading slash so it does NOT match the tracked
+# docs/alstom/ wiki pages.
+/alstom/

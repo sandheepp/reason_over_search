@@ -1,0 +1,97 @@
+{
+  "per_call_ms": {
+    "cpu_p50": 66.78,
+    "gpu_p50": 14.75
+  },
+  "runs": [
+    {
+      "N": 5,
+      "num_retriever": 1,
+      "wall_s": 11.84,
+      "inference_loop_s": 4.13,
+      "retriever_calls": 9,
+      "calls_per_q": 1.8,
+      "retr_wall_serial_cpu_s": 0.60102,
+      "retr_wall_per_worker_cpu_s": 0.60102,
+      "retr_utilization_pct": 14.552542372881355
+    },
+    {
+      "N": 5,
+      "num_retriever": 4,
+      "wall_s": 11.79,
+      "inference_loop_s": 4.07,
+      "retriever_calls": 9,
+      "calls_per_q": 1.8,
+      "retr_wall_serial_cpu_s": 0.60102,
+      "retr_wall_per_worker_cpu_s": 0.150255,
+      "retr_utilization_pct": 3.6917690417690414
+    },
+    {
+      "N": 25,
+      "num_retriever": 1,
+      "wall_s": 13.81,
+      "inference_loop_s": 6.04,
+      "retriever_calls": 48,
+      "calls_per_q": 1.92,
+      "retr_wall_serial_cpu_s": 3.20544,
+      "retr_wall_per_worker_cpu_s": 3.20544,
+      "retr_utilization_pct": 53.070198675496684
+    },
+    {
+      "N": 25,
+      "num_retriever": 4,
+      "wall_s": 13.77,
+      "inference_loop_s": 5.9,
+      "retriever_calls": 48,
+      "calls_per_q": 1.92,
+      "retr_wall_serial_cpu_s": 3.20544,
+      "retr_wall_per_worker_cpu_s": 0.80136,
+      "retr_utilization_pct": 13.58237288135593
+    },
+    {
+      "N": 125,
+      "num_retriever": 1,
+      "wall_s": 32.04,
+      "inference_loop_s": 24.22,
+      "retriever_calls": 239,
+      "calls_per_q": 1.912,
+      "retr_wall_serial_cpu_s": 15.960420000000001,
+      "retr_wall_per_worker_cpu_s": 15.960420000000001,
+      "retr_utilization_pct": 65.89768786127168
+    },
+    {
+      "N": 125,
+      "num_retriever": 4,
+      "wall_s": 31.51,
+      "inference_loop_s": 23.81,
+      "retriever_calls": 243,
+      "calls_per_q": 1.944,
+      "retr_wall_serial_cpu_s": 16.22754,
+      "retr_wall_per_worker_cpu_s": 4.056885,
+      "retr_utilization_pct": 17.03857622847543
+    }
+  ],
+  "criticality": {
+    "test": "Going nr=1 -> nr=4 reduces serial retriever wall ~4x. If inf time also drops, retrieval is on the critical path.",
+    "deltas_pct": {
+      "5": 1.45,
+      "25": 2.32,
+      "125": 1.69
+    },
+    "interpretation": "All deltas <3% -> retrieval fully hidden by decode at every tested N."
+  },
+  "crossover_calls_per_q": {
+    "for_cpu_retr_to_dominate_at_N": {
+      "5": 12.37,
+      "25": 3.62,
+      "125": 2.9
+    },
+    "for_gpu_retr_to_dominate_at_N": {
+      "5": 56.0,
+      "25": 16.38,
+      "125": 13.14
+    },
+    "actual_calls_per_q_observed": 1.91
+  },
+  "conclusion": "For multi-turn search-r1 with ~1.9 retriever calls/q on a single 4090: decode dominates wall time and retrieval is hidden behind concurrent decode at every tested batch size (N=5,25,125). GPU FAISS yields ~0% end-to-end speedup in this regime. It would only help if calls/q exceeded ~2.9 at N=125 (or even higher at smaller N), or if decode wall were much shorter."
+}

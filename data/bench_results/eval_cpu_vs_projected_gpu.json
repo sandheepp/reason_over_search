@@ -1,0 +1,45 @@
+{
+  "retriever_bench": {
+    "cpu_single_p50_ms": 66.77522696554661,
+    "cpu_single_mean_ms": 66.29457503004232,
+    "gpu_single_p50_ms": 14.74541099742055,
+    "gpu_single_mean_ms": 16.168450871191453,
+    "delta_per_call_ms": 52.02981596812606,
+    "speedup_x_single_p50": 4.528542946495541
+  },
+  "eval_runs": [
+    {
+      "label": "num_retriever=1",
+      "wall_s": 13.668,
+      "inference_s": 5.81,
+      "calls": 48,
+      "tqdm_per_iter_s": 0.232,
+      "metrics": {
+        "em": 0.36,
+        "f1": 0.416
+      }
+    },
+    {
+      "label": "num_retriever=4",
+      "wall_s": 15.577,
+      "inference_s": 7.5,
+      "calls": 49,
+      "tqdm_per_iter_s": 0.3,
+      "metrics": {
+        "em": 0.32,
+        "f1": 0.411
+      }
+    }
+  ],
+  "constraint": "GPU FAISS (~17 GiB VRAM) + SGLang instruct (~22 GiB VRAM) > 24 GiB on a single 4090; GPU-retriever end-to-end run is not feasible on this hardware.",
+  "projection": {
+    "n_questions": 25,
+    "n_retriever_calls": 48,
+    "calls_per_question": 1.92,
+    "measured_inference_s_cpu_retriever": 5.81,
+    "delta_retriever_wall_s": 2.497431166470051,
+    "projected_inference_s_gpu_retriever_best": 3.312568833529949,
+    "projected_inference_s_gpu_retriever_worst": 5.81,
+    "note": "The num_retriever=4 control run did not reduce wall time, suggesting retrieval is largely overlapped with batched decode. Realistic gain is closer to 'worst'."
+  }
+}

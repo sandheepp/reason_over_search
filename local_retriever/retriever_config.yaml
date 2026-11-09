@@ -1,0 +1,19 @@
+# ------------------------------------------------Environment Settings------------------------------------------------#
+# gpu_id explicitly null: flashrag/config/config.py:_init_device() overwrites
+# CUDA_VISIBLE_DEVICES from this field, which clobbers the per-process GPU pinning
+# launch_ivfsq8.sh start_fleet sets when pairing each retriever to its GPU.
+# basic_config.yaml has gpu_id: "0" as a default, which would still apply if this
+# field were merely omitted; setting null makes _init_device a no-op and lets the
+# parent shell's CUDA_VISIBLE_DEVICES win (encoder lands on visible GPU index 0).
+gpu_id: null
+
+# -------------------------------------------------Retrieval Settings------------------------------------------------#
+# Defaults (CPU + IVF-SQ8 index): fast enough for training rollouts (≈1.7 s for a 3-query batch
+# under 8 workers; the flat IP index timed out under load). Recall hit < 1 % vs flat (per local_retriever/README.md).
+# To swap back to the exact flat IP index, pass `--index ./indexes/wiki18_100w_e5_flat_inner.index` to
+# retriever_serving.py. For full retrieval-quality eval (not training rollouts) use the flat index with `--num_retriever 2`.
+retrieval_method: "./models/e5-base-v2/"  # name or path of the retrieval model.
+index_path: "./indexes/wiki18_100w_e5_ivf4096_sq8.index"  # ~16 GB IVF4096-SQ8; download from HF dataset pantomiman/reason-over-search; CLI --index can override
+faiss_gpu: False  # CPU FAISS by default; CLI --gpu can override
+faiss_nprobe: 64  # only applied when the index is IVF-based (FlatIP ignores it)
+corpus_path: "./corpus/wiki18_100w.jsonl"  # path to corpus in '.jsonl' format that store the documents
